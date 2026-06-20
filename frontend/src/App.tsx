@@ -9,7 +9,7 @@ import {
   FileInput,
   Group,
   Loader,
-  NavLink,
+  Modal,
   Paper,
   ScrollArea,
   Select,
@@ -36,9 +36,9 @@ import {
   TbDatabase,
   TbFileText,
   TbLayoutSidebarLeftCollapse,
-  TbLayoutSidebarLeftExpand,
   TbPlus,
   TbTags,
+  TbTrash,
   TbUpload,
   TbWand,
 } from "react-icons/tb";
@@ -169,6 +169,9 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     const message = await response.text();
     throw new Error(message || `Request failed with ${response.status}`);
   }
+  if (response.status === 204) {
+    return undefined as T;
+  }
   return response.json() as Promise<T>;
 }
 
@@ -222,6 +225,8 @@ export function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("all");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [addLanguageFormOpen, setAddLanguageFormOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
 
   const [datasetName, setDatasetName] = useState("Nahuatl field notes");
   const [languageCode, setLanguageCode] = useState("nah");
@@ -254,6 +259,8 @@ export function App() {
   useEffect(() => {
     if (selectedDatasetId) {
       void refreshWorkspace(selectedDatasetId);
+    } else {
+      clearWorkspaceState();
     }
   }, [selectedDatasetId]);
 
@@ -262,7 +269,9 @@ export function App() {
     try {
       const rows = await api<Dataset[]>("/datasets");
       setDatasets(rows);
-      setSelectedDatasetId(current => current || rows[0]?.id || "");
+      setSelectedDatasetId(current =>
+        rows.some(dataset => dataset.id === current) ? current : rows[0]?.id || "",
+      );
     } catch (error) {
       showError(error);
     } finally {
@@ -333,6 +342,31 @@ export function App() {
       const rows = await api<Dataset[]>("/datasets");
       setDatasets(rows);
       setSelectedDatasetId(created.id);
+      setAddLanguageFormOpen(false);
+    }
+  }
+
+  async function deleteDataset(dataset: Dataset) {
+    setWorking(true);
+    try {
+      await api<void>(`/datasets/${dataset.id}`, { method: "DELETE" });
+      const rows = await api<Dataset[]>("/datasets");
+      const currentStillExists = rows.some(item => item.id === selectedDatasetId);
+      const nextSelectedId = currentStillExists ? selectedDatasetId : rows[0]?.id || "";
+
+      setDatasets(rows);
+      setSelectedDatasetId(nextSelectedId);
+      setDeleteTarget(null);
+      setToast({ tone: "green", message: "Language deleted" });
+      setJobs([]);
+
+      if (!nextSelectedId) {
+        clearWorkspaceState();
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      setWorking(false);
     }
   }
 
@@ -429,6 +463,15 @@ export function App() {
     setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)].slice(0, 5));
   }
 
+  function clearWorkspaceState() {
+    setDashboard(null);
+    setSuggestions([]);
+    setOcrSuggestions([]);
+    setTokenDrafts({});
+    setOcrDrafts({});
+    setJobs([]);
+  }
+
   function updateTokenDraft(suggestionId: string, tokenIndex: number, tag: string | null) {
     if (!tag) return;
     setTokenDrafts(previous => {
@@ -464,7 +507,39 @@ export function App() {
   }
 
   return (
-    <AppShell
+    <>
+      <Modal
+        centered
+        onClose={() => setDeleteTarget(null)}
+        opened={deleteTarget !== null}
+        title="Delete Language"
+      >
+        <Stack gap="md">
+          <Text c="dimmed" size="sm">
+            Delete {deleteTarget?.language_name ?? "this language"} and remove its imports, labels, research, jobs,
+            and model state.
+          </Text>
+          <Group justify="flex-end">
+            <Button color="gray" disabled={working} onClick={() => setDeleteTarget(null)} variant="subtle">
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              disabled={working || !deleteTarget}
+              leftSection={<TbTrash aria-hidden="true" size={16} />}
+              onClick={() => {
+                if (deleteTarget) {
+                  void deleteDataset(deleteTarget);
+                }
+              }}
+            >
+              Delete Language
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <AppShell
       layout="alt"
       header={{ height: 64 }}
       navbar={{
@@ -496,18 +571,18 @@ export function App() {
         <Stack gap="sm" h="100%" p="sm">
           {sidebarCollapsed ? (
             <Stack align="center" gap="sm" py="xs">
-              <ThemeIcon color="violet" radius="md" size={42} variant="filled">
-                LB
-              </ThemeIcon>
               <Tooltip label="Expand Sidebar" position="right">
                 <ActionIcon
                   aria-label="Expand sidebar"
-                  color="gray"
+                  color="violet"
                   onClick={() => setSidebarCollapsed(false)}
-                  size={38}
-                  variant="subtle"
+                  radius="md"
+                  size={46}
+                  variant="filled"
                 >
-                  <TbLayoutSidebarLeftExpand aria-hidden="true" size={20} />
+                  <Text fw={850} size="sm">
+                    LB
+                  </Text>
                 </ActionIcon>
               </Tooltip>
             </Stack>
@@ -575,98 +650,139 @@ export function App() {
                       </ActionIcon>
                     </Tooltip>
                   ) : (
-                    <NavLink
+                    <Group
                       key={dataset.id}
-                      active={dataset.id === selectedDataset?.id}
-                      description={`${dataset.language_name} · ${dataset.language_code}`}
-                      label={dataset.name}
-                      leftSection={
-                        <ThemeIcon
-                          color={dataset.id === selectedDataset?.id ? "green" : "violet"}
+                      align="stretch"
+                      gap={6}
+                      wrap="nowrap"
+                    >
+                      <Button
+                        color={dataset.id === selectedDataset?.id ? "green" : "gray"}
+                        fullWidth
+                        justify="flex-start"
+                        leftSection={
+                          <ThemeIcon
+                            color={dataset.id === selectedDataset?.id ? "green" : "violet"}
+                            radius="md"
+                            size={34}
+                            variant={dataset.id === selectedDataset?.id ? "filled" : "light"}
+                          >
+                            {dataset.language_code.slice(0, 2).toUpperCase()}
+                          </ThemeIcon>
+                        }
+                        onClick={() => setSelectedDatasetId(dataset.id)}
+                        style={{ flex: 1, height: "auto", minWidth: 0, paddingBottom: 8, paddingTop: 8 }}
+                        variant={dataset.id === selectedDataset?.id ? "light" : "subtle"}
+                      >
+                        <Box style={{ minWidth: 0, textAlign: "left" }}>
+                          <Text fw={700} size="sm" truncate>
+                            {dataset.name}
+                          </Text>
+                          <Text c="dimmed" size="xs" truncate>
+                            {dataset.language_name} · {dataset.language_code}
+                          </Text>
+                        </Box>
+                      </Button>
+                      <Tooltip label={`Delete ${dataset.language_name}`}>
+                        <ActionIcon
+                          aria-label={`Delete ${dataset.language_name}`}
+                          color="red"
+                          disabled={working}
+                          onClick={() => setDeleteTarget(dataset)}
                           radius="md"
-                          size={34}
-                          variant={dataset.id === selectedDataset?.id ? "filled" : "light"}
+                          size={42}
+                          variant="subtle"
                         >
-                          {dataset.language_code.slice(0, 2).toUpperCase()}
-                        </ThemeIcon>
-                      }
-                      onClick={() => setSelectedDatasetId(dataset.id)}
-                      variant="filled"
-                    />
+                          <TbTrash aria-hidden="true" size={18} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
                   ),
                 )
               )}
             </Stack>
           </ScrollArea>
 
-          <Divider />
-          {sidebarCollapsed ? (
-            <Tooltip label="Expand Sidebar to Add Language" position="right">
-              <ActionIcon
-                aria-label="Expand sidebar to add a language"
-                color="green"
-                onClick={() => setSidebarCollapsed(false)}
-                radius="md"
-                size={46}
-                variant="light"
-              >
-                <TbPlus aria-hidden="true" size={20} />
-              </ActionIcon>
-            </Tooltip>
-          ) : (
-            <Box
-              component="form"
-              onSubmit={event => {
-                event.preventDefault();
-                void createDataset();
-              }}
-            >
-              <Stack gap="xs">
-                <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-                  New Language
-                </Text>
-                <TextInput
-                  autoComplete="off"
-                  label="Dataset"
-                  name="datasetName"
-                  onChange={event => setDatasetName(event.currentTarget.value)}
-                  placeholder="Nahuatl field notes…"
-                  size="xs"
-                  value={datasetName}
-                />
-                <Group grow>
-                  <TextInput
-                    autoComplete="off"
-                    label="Code"
-                    name="languageCode"
-                    onChange={event => setLanguageCode(event.currentTarget.value)}
-                    placeholder="nah…"
-                    size="xs"
-                    spellCheck={false}
-                    value={languageCode}
-                  />
-                  <TextInput
-                    autoComplete="off"
-                    label="Language"
-                    name="languageName"
-                    onChange={event => setLanguageName(event.currentTarget.value)}
-                    placeholder="Nahuatl…"
-                    size="xs"
-                    value={languageName}
-                  />
-                </Group>
+          {!sidebarCollapsed ? (
+            <>
+              <Divider />
+              {addLanguageFormOpen ? (
+                <Box
+                  component="form"
+                  onSubmit={event => {
+                    event.preventDefault();
+                    void createDataset();
+                  }}
+                >
+                  <Stack gap="xs">
+                    <Group justify="space-between" wrap="nowrap">
+                      <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                        New Language
+                      </Text>
+                      <Button
+                        color="gray"
+                        onClick={() => setAddLanguageFormOpen(false)}
+                        size="compact-xs"
+                        type="button"
+                        variant="subtle"
+                      >
+                        Hide Form
+                      </Button>
+                    </Group>
+                    <TextInput
+                      autoComplete="off"
+                      label="Dataset"
+                      name="datasetName"
+                      onChange={event => setDatasetName(event.currentTarget.value)}
+                      placeholder="Nahuatl field notes…"
+                      size="xs"
+                      value={datasetName}
+                    />
+                    <Group grow>
+                      <TextInput
+                        autoComplete="off"
+                        label="Code"
+                        name="languageCode"
+                        onChange={event => setLanguageCode(event.currentTarget.value)}
+                        placeholder="nah…"
+                        size="xs"
+                        spellCheck={false}
+                        value={languageCode}
+                      />
+                      <TextInput
+                        autoComplete="off"
+                        label="Language"
+                        name="languageName"
+                        onChange={event => setLanguageName(event.currentTarget.value)}
+                        placeholder="Nahuatl…"
+                        size="xs"
+                        value={languageName}
+                      />
+                    </Group>
+                    <Button
+                      color="green"
+                      disabled={working || !datasetName.trim() || !languageCode.trim() || !languageName.trim()}
+                      leftSection={<TbPlus aria-hidden="true" size={15} />}
+                      size="xs"
+                      type="submit"
+                    >
+                      Create Language
+                    </Button>
+                  </Stack>
+                </Box>
+              ) : (
                 <Button
                   color="green"
-                  disabled={working || !datasetName.trim() || !languageCode.trim() || !languageName.trim()}
-                  leftSection={<TbPlus aria-hidden="true" size={15} />}
-                  size="xs"
-                  type="submit"
+                  fullWidth
+                  leftSection={<TbPlus aria-hidden="true" size={16} />}
+                  onClick={() => setAddLanguageFormOpen(true)}
+                  variant="light"
                 >
-                  Create Language
+                  Add Language
                 </Button>
-              </Stack>
-            </Box>
-          )}
+              )}
+            </>
+          ) : null}
         </Stack>
       </AppShell.Navbar>
 
@@ -873,7 +989,8 @@ export function App() {
           </Stack>
         </Box>
       </AppShell.Main>
-    </AppShell>
+      </AppShell>
+    </>
   );
 }
 

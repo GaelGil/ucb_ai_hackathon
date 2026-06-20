@@ -61,6 +61,38 @@ def test_csv_import_uses_text_column() -> None:
     assert [item["text"] for item in response["created_items"]] == ["hello world", "second row"]
 
 
+def test_delete_dataset_removes_workspace_state() -> None:
+    client = TestClient(create_app(InMemoryRepository()))
+
+    dataset = client.post(
+        "/datasets",
+        json={"name": "Zapotec pilot", "language_code": "zap", "language_name": "Zapotec"},
+    ).json()
+    import_response = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "uno dos tres", "source_type": "text"},
+    ).json()
+    research_response = client.post(f"/datasets/{dataset['id']}/research").json()
+    suggestions = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()["suggestions"]
+
+    response = client.delete(f"/datasets/{dataset['id']}")
+
+    assert response.status_code == 204
+    assert all(item["id"] != dataset["id"] for item in client.get("/datasets").json())
+    assert client.get(f"/datasets/{dataset['id']}/dashboard").status_code == 404
+    assert client.get(f"/jobs/{import_response['job']['id']}").status_code == 404
+    assert client.get(f"/jobs/{research_response['job']['id']}").status_code == 404
+    assert client.patch(f"/suggestions/{suggestions[0]['id']}", json={"action": "approved"}).status_code == 404
+
+
+def test_delete_unknown_dataset_returns_404() -> None:
+    client = TestClient(create_app(InMemoryRepository()))
+
+    response = client.delete("/datasets/ds_missing")
+
+    assert response.status_code == 404
+
+
 def test_translation_demo_fallback() -> None:
     client = TestClient(create_app(InMemoryRepository()))
 

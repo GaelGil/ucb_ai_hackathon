@@ -56,6 +56,28 @@ class InMemoryRepository:
                 raise NotFoundError(f"Dataset {dataset_id} was not found.")
             return dataset
 
+    def delete_dataset(self, dataset_id: str) -> None:
+        with self._lock:
+            self._ensure_dataset(dataset_id)
+            del self.datasets[dataset_id]
+            self.imports = {
+                key: record for key, record in self.imports.items() if record.dataset_id != dataset_id
+            }
+            self.items = {key: item for key, item in self.items.items() if item.dataset_id != dataset_id}
+            self.assets = {key: asset for key, asset in self.assets.items() if asset.dataset_id != dataset_id}
+            self.research = {
+                key: artifact for key, artifact in self.research.items() if artifact.dataset_id != dataset_id
+            }
+            self.suggestions = {
+                key: suggestion
+                for key, suggestion in self.suggestions.items()
+                if suggestion.dataset_id != dataset_id
+            }
+            self.pos_models.pop(dataset_id, None)
+            self.jobs = {
+                key: job for key, job in self.jobs.items() if job.metadata.get("dataset_id") != dataset_id
+            }
+
     def add_import(self, record: ImportRecord) -> ImportRecord:
         with self._lock:
             self._ensure_dataset(record.dataset_id)

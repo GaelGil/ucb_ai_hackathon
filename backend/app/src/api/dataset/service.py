@@ -15,6 +15,9 @@ class DatasetService:
     def list_datasets(self) -> list[Dataset]:
         return self.repository.list_datasets()
 
+    def delete_dataset(self, dataset_id: str) -> None:
+        self.repository.delete_dataset(dataset_id)
+
     def get_dashboard(self, dataset_id: str) -> Dashboard:
         return self.repository.dashboard(dataset_id)
 

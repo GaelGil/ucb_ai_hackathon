@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
 from app.src.api.dependencies import get_dataset_service
 from app.src.api.dataset.service import DatasetService
@@ -18,6 +18,11 @@ def create_dataset(payload: DatasetCreate, service: DatasetService = Depends(get
 @router.get("/datasets", response_model=list[Dataset])
 def list_datasets(service: DatasetService = Depends(get_dataset_service)) -> list[Dataset]:
     return service.list_datasets()
+
+
+@router.delete("/datasets/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_dataset(dataset_id: str, service: DatasetService = Depends(get_dataset_service)) -> None:
+    service.delete_dataset(dataset_id)
 
 
 @router.get("/datasets/{dataset_id}/dashboard", response_model=Dashboard)
