@@ -1,8 +1,8 @@
 import {
   AppShell,
+  ActionIcon,
   Badge,
   Box,
-  Burger,
   Card,
   Group,
   NavLink,
@@ -17,7 +17,7 @@ import {
   Title,
   UnstyledButton,
 } from "@mantine/core";
-import { useDisclosure } from "@mantine/hooks";
+import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import {
   flexRender,
   getCoreRowModel,
@@ -27,6 +27,7 @@ import {
   type ColumnFiltersState,
 } from "@tanstack/react-table";
 import { useEffect, useMemo, useState } from "react";
+import { TbLayoutSidebarLeftCollapse, TbLayoutSidebarLeftExpand } from "react-icons/tb";
 
 type Language = {
   code: string;
@@ -315,11 +316,13 @@ const columns: ColumnDef<TaskRow>[] = [
 ];
 
 export function App() {
-  const [mobileOpened, { toggle: toggleMobile, close: closeMobile }] = useDisclosure();
+  const [mobileOpened, { open: openMobile, close: closeMobile }] = useDisclosure();
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
   const [selectedLanguageCode, setSelectedLanguageCode] = useState(initialLanguageCode);
   const [activeCategory, setActiveCategory] = useState<TaskCategory>(initialCategory);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>(initialSourceFilter);
+  const isDesktop = useMediaQuery("(min-width: 48em)");
+  const compactSidebar = Boolean(isDesktop && desktopCollapsed);
 
   const selectedLanguage = useMemo(
     () => languages.find(language => language.code === selectedLanguageCode) ?? languages[0],
@@ -375,7 +378,8 @@ export function App() {
   return (
     <AppShell
       header={{ height: 64 }}
-      navbar={{ width: desktopCollapsed ? 92 : 304, breakpoint: "sm", collapsed: { mobile: !mobileOpened } }}
+      layout="alt"
+      navbar={{ width: { base: 304, sm: desktopCollapsed ? 92 : 304 }, breakpoint: "sm", collapsed: { mobile: !mobileOpened } }}
       padding={0}
     >
       <AppShell.Header
@@ -386,42 +390,36 @@ export function App() {
         }}
       >
         <Group h="100%" px="md" justify="space-between" wrap="nowrap">
-          <Group gap="sm" wrap="nowrap">
-            <Burger opened={mobileOpened} onClick={toggleMobile} hiddenFrom="sm" size="sm" aria-label="Toggle sidebar" />
-            <Burger
-              opened={!desktopCollapsed}
-              onClick={() => setDesktopCollapsed(collapsed => !collapsed)}
-              visibleFrom="sm"
-              size="sm"
-              aria-label={desktopCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            />
-            <ThemeIcon
+          <Group gap="sm" wrap="nowrap" miw={0}>
+            <ActionIcon
+              aria-label="Open sidebar"
+              color="gray"
+              hiddenFrom="sm"
+              onClick={openMobile}
               radius="md"
-              size={38}
-              variant="filled"
-              style={{
-                background: "linear-gradient(135deg, #3b82f6, #14b8a6)",
-                color: "white",
-                fontSize: "0.78rem",
-                fontWeight: 900,
-                letterSpacing: 0,
-              }}
+              size="lg"
+              variant="subtle"
             >
-              LB
-            </ThemeIcon>
+              <TbLayoutSidebarLeftExpand size={21} />
+            </ActionIcon>
             <Box>
-              <Title order={1} size="h3" lh={1}>
-                LangBase
-              </Title>
-              <Text c="dimmed" size="xs" visibleFrom="sm">
-                Language intelligence workspace
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                {activeCard?.label ?? "All"} workspace
+              </Text>
+              <Text fw={750} size="sm">
+                {selectedLanguage?.name ?? "Language"} language dashboard
               </Text>
             </Box>
           </Group>
 
-          <Badge color="blue" radius="sm" variant="light">
-            {selectedLanguage?.name ?? "Language"} active
-          </Badge>
+          <Group gap="xs" wrap="nowrap">
+            <Badge color="blue" radius="sm" variant="light">
+              {selectedLanguage?.name ?? "Language"} active
+            </Badge>
+            <Badge color="gray" radius="sm" variant="outline" visibleFrom="xs">
+              {selectedLanguageRows.length} rows
+            </Badge>
+          </Group>
         </Group>
       </AppShell.Header>
 
@@ -432,8 +430,92 @@ export function App() {
         }}
       >
         <Stack gap="xs" h="100%" p="sm">
-          {!desktopCollapsed ? (
-            <Box px="xs" py="sm">
+          <Box
+            px={compactSidebar ? 0 : "xs"}
+            py="xs"
+            style={{ borderBottom: "1px solid rgba(148, 163, 184, 0.16)" }}
+          >
+            {compactSidebar ? (
+              <Stack align="center" gap="xs">
+                <ActionIcon
+                  aria-label="Expand sidebar"
+                  color="gray"
+                  onClick={() => setDesktopCollapsed(false)}
+                  radius="md"
+                  size="lg"
+                  variant="subtle"
+                >
+                  <TbLayoutSidebarLeftExpand size={21} />
+                </ActionIcon>
+                <ThemeIcon
+                  radius="md"
+                  size={38}
+                  variant="filled"
+                  style={{
+                    background: "linear-gradient(135deg, #3b82f6, #14b8a6)",
+                    color: "white",
+                    fontSize: "0.78rem",
+                    fontWeight: 900,
+                    letterSpacing: 0,
+                  }}
+                >
+                  LB
+                </ThemeIcon>
+              </Stack>
+            ) : (
+              <Group h={48} justify="space-between" wrap="nowrap">
+                <Group gap="sm" wrap="nowrap" miw={0}>
+                  <ThemeIcon
+                    radius="md"
+                    size={38}
+                    variant="filled"
+                    style={{
+                      background: "linear-gradient(135deg, #3b82f6, #14b8a6)",
+                      color: "white",
+                      fontSize: "0.78rem",
+                      fontWeight: 900,
+                      letterSpacing: 0,
+                    }}
+                  >
+                    LB
+                  </ThemeIcon>
+                  <Box miw={0}>
+                    <Title order={1} size="h3" lh={1}>
+                      LangBase
+                    </Title>
+                    <Text c="dimmed" size="xs" visibleFrom="xs">
+                      Language intelligence workspace
+                    </Text>
+                  </Box>
+                </Group>
+                <ActionIcon
+                  aria-label="Collapse sidebar"
+                  color="gray"
+                  onClick={() => setDesktopCollapsed(true)}
+                  radius="md"
+                  size="lg"
+                  variant="subtle"
+                  visibleFrom="sm"
+                >
+                  <TbLayoutSidebarLeftCollapse size={21} />
+                </ActionIcon>
+                <ActionIcon
+                  aria-label="Hide sidebar"
+                  color="gray"
+                  hiddenFrom="sm"
+                  onClick={closeMobile}
+                  radius="md"
+                  size="lg"
+                  variant="subtle"
+                >
+                  <TbLayoutSidebarLeftCollapse size={21} />
+                </ActionIcon>
+              </Group>
+            )}
+          </Box>
+
+          {!compactSidebar ? (
+            <Box px="xs" py="xs">
               <Text c="dimmed" fw={700} size="xs" tt="uppercase">
                 Languages
               </Text>
@@ -450,8 +532,8 @@ export function App() {
                   key={language.code}
                   active={language.code === selectedLanguageCode}
                   aria-label={`Select ${language.name}`}
-                  description={desktopCollapsed ? undefined : `${language.region} - ${language.script}`}
-                  label={desktopCollapsed ? language.code.toUpperCase() : language.name}
+                  description={compactSidebar ? undefined : `${language.region} - ${language.script}`}
+                  label={compactSidebar ? language.code.toUpperCase() : language.name}
                   leftSection={
                     <ThemeIcon radius="md" size={34} variant={language.code === selectedLanguageCode ? "filled" : "light"}>
                       {language.code.toUpperCase()}
