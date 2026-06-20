@@ -4,16 +4,30 @@ FastAPI backend for a low-resource language dataset preservation MVP. It support
 
 ## Structure
 
-Application code lives under `app/src`. Each API domain has a `controller.py` for FastAPI routes and a `service.py` for business logic:
+Application code lives under `app/src`. API domains own their FastAPI controllers and business services; database support lives beside them under the same source root.
 
 ```text
-app/src/api/
-  data/
-  dataset/
-  labels/
-  language/
-  research/
+app/
+  api.py                  # compatibility wrapper for app.src.api:create_app
+  src/
+    api/
+      data/
+      dataset/
+      labels/
+      language/
+      research/
+    database/
+      models/
+      repositories/
+      schemas/
+      session.py
+    config.py
+    providers.py
+    tracing.py
+migrations/               # Alembic migration environment and versions
 ```
+
+The current public API still uses the in-memory repository. The SQLModel repositories and Alembic migrations are the persistence groundwork for a later DB-backed implementation pass.
 
 ## Run
 
@@ -27,13 +41,20 @@ The API runs on `http://127.0.0.1:8000` by default.
 
 ```bash
 uv run pytest
+uv run python -m compileall app main.py
 ```
 
-## Integration Environment
+## Environment
 
-The app works without credentials using deterministic local fallbacks. Copy `.env.example` to `.env` or `.env.local` and set these for real integrations:
+The app works without credentials using deterministic local fallbacks. Copy `.env.example` to `.env` or `.env.local` and set credentials for real integrations.
+
+pydantic-settings loads `backend/.env` and then `backend/.env.local`; real environment variables override both.
+
+Common variables:
 
 ```bash
+DATABASE_URL=sqlite:///./langbase.db
+DB_ECHO=false
 BROWSERBASE_API_KEY=...
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=...
@@ -44,68 +65,31 @@ NAHUATL_MODEL_ENDPOINT_URL=https://your-neuron-endpoint/invoke
 NAHUATL_MODEL_NAME=somosnlp-hackathon-2022/t5-small-spanish-nahuatl
 ```
 
-pydantic-settings loads `backend/.env` and then `backend/.env.local`; real environment variables override both.
+For Supabase, use a SQLAlchemy/psycopg2 URL, for example:
 
-Database models are intentionally not implemented here. Replace `InMemoryRepository` with a DB-backed repository that preserves the same method contracts.
-# Backend — Database Layer
-
-SQLModel + Alembic + Pydantic Settings against Supabase Postgres.
-
-## Structure
-
+```bash
+DATABASE_URL=postgresql+psycopg2://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
 ```
-app/
-├── core/
-│   ├── config.py          # Pydantic Settings (loads .env -> DATABASE_URL)
-│   └── database.py         # SQLAlchemy engine + get_session()
-├── database/
-│   ├── models/             # SQLModel tables: Language, Data, Label
-│   ├── schemas/            # Pydantic request/response models
-│   └── repositories/       # Data-access layer (one class per table)
-└── api/
-    └── language/           # controller.py + service.py (example resource)
-migrations/                 # Alembic (env.py wired to Settings + SQLModel.metadata)
-└── versions/               # Migration files
-```
-
-### Data model
-- **Language** (id, name) → has many **Data**
-- **Data** (id, name, type ∈ {text, image, audio}) → belongs to Language, has many **Labels**
-- **Label** (id, name, type, value) → belongs to Data
-
-## Setup
-
-1. Copy the env template and fill in your Supabase connection string:
-   ```bash
-   cp .env.example .env
-   ```
-   In Supabase: **Project Settings → Database → Connection string → URI**.
-   Use the direct/session connection (port `5432`), change the scheme to
-   `postgresql+psycopg2://`, and append `?sslmode=require`:
-   ```
-   DATABASE_URL=postgresql+psycopg2://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
-   ```
-
-2. Install dependencies (already done if `uv.lock` exists):
-   ```bash
-   uv sync
-   ```
 
 ## Migrations
 
-Generate a new migration after changing models in `app/database/models/`:
+Generate a new migration after changing models in `app/src/database/models/`:
+
 ```bash
 uv run alembic revision --autogenerate -m "describe your change"
 ```
 
-Apply migrations to the database:
+Apply migrations:
+
 ```bash
 uv run alembic upgrade head
 ```
 
-Other useful commands:
+Useful commands:
+
 ```bash
-uv run alembic current        # show current revision
-uv run alembic history        # list migrations
-uv run alembic downgrade -1   # roll back one migration
+uv run alembic heads
+uv run alembic current
+uv run alembic history
+uv run alembic downgrade -1
 ```
