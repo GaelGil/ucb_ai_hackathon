@@ -1,4 +1,5 @@
 import {
+  ActionIcon,
   AppShell,
   Badge,
   Box,
@@ -21,8 +22,26 @@ import {
   TextInput,
   ThemeIcon,
   Title,
+  Tooltip,
 } from "@mantine/core";
+import {
+  createColumnHelper,
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+} from "@tanstack/react-table";
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  TbDatabase,
+  TbFileText,
+  TbLayoutSidebarLeftCollapse,
+  TbLayoutSidebarLeftExpand,
+  TbPlus,
+  TbTags,
+  TbUpload,
+  TbWand,
+} from "react-icons/tb";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 
@@ -53,8 +72,10 @@ const UI = {
   panel: "rgba(18, 18, 22, 0.96)",
   panelSoft: "rgba(14, 14, 18, 0.84)",
   border: "rgba(255, 255, 255, 0.11)",
-  borderStrong: "rgba(168, 85, 247, 0.32)",
 };
+
+const SIDEBAR_WIDTH = 304;
+const SIDEBAR_COLLAPSED_WIDTH = 84;
 
 type SourceType = "text" | "csv" | "txt" | "pdf" | "image";
 type SuggestionType = "pos" | "ocr";
@@ -137,6 +158,7 @@ type Toast = {
 
 type DraftMap = Record<string, TokenSuggestion[]>;
 type TextDraftMap = Record<string, string>;
+type WorkspaceTab = "all" | "pos" | "ocr" | "upload";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -198,7 +220,8 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [activeTab, setActiveTab] = useState<string | null>("pos");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("all");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [datasetName, setDatasetName] = useState("Nahuatl field notes");
   const [languageCode, setLanguageCode] = useState("nah");
@@ -206,8 +229,6 @@ export function App() {
   const [manualText, setManualText] = useState("muchas flores son blancas\nel agua corre rapido");
   const [manualSource, setManualSource] = useState<SourceType>("text");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [translateText, setTranslateText] = useState("muchas flores son blancas");
-  const [translation, setTranslation] = useState("");
   const [tokenDrafts, setTokenDrafts] = useState<DraftMap>({});
   const [ocrDrafts, setOcrDrafts] = useState<TextDraftMap>({});
 
@@ -295,14 +316,15 @@ export function App() {
   }
 
   async function createDataset() {
+    if (!datasetName.trim() || !languageCode.trim() || !languageName.trim()) return;
     const created = await runAction(
       () =>
         api<Dataset>("/datasets", {
           method: "POST",
           body: JSON.stringify({
-            name: datasetName,
-            language_code: languageCode,
-            language_name: languageName,
+            name: datasetName.trim(),
+            language_code: languageCode.trim(),
+            language_name: languageName.trim(),
           }),
         }),
       "Dataset created",
@@ -403,17 +425,6 @@ export function App() {
     }, "POS model trigger completed");
   }
 
-  async function translateNahuatl() {
-    await runAction(async () => {
-      const response = await api<{ output_text: string; provider: string }>("/models/nahuatl/translate", {
-        method: "POST",
-        body: JSON.stringify({ text: translateText, direction: "spanish_to_nahuatl" }),
-      });
-      setTranslation(`${response.output_text} (${response.provider})`);
-      return response;
-    }, "Translation generated");
-  }
-
   function rememberJob(job: Job) {
     setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)].slice(0, 5));
   }
@@ -435,12 +446,18 @@ export function App() {
     setToast({ tone: "red", message: error instanceof Error ? error.message : "Request failed" });
   }
 
+  function handleTabChange(value: string | null) {
+    if (value === "all" || value === "pos" || value === "ocr" || value === "upload") {
+      setActiveTab(value);
+    }
+  }
+
   if (loading) {
     return (
       <Box bg={UI.background} mih="100vh" p="xl">
         <Group justify="center" mt="20vh">
           <Loader color="violet" />
-          <Text c="dimmed">Loading workspace</Text>
+          <Text c="dimmed">Loading workspace…</Text>
         </Group>
       </Box>
     );
@@ -448,8 +465,13 @@ export function App() {
 
   return (
     <AppShell
+      layout="alt"
       header={{ height: 64 }}
-      navbar={{ width: 300, breakpoint: "sm", collapsed: { mobile: false } }}
+      navbar={{
+        width: sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH,
+        breakpoint: "sm",
+        collapsed: { mobile: false },
+      }}
       padding={0}
     >
       <AppShell.Header
@@ -458,26 +480,10 @@ export function App() {
           borderBottom: `1px solid ${UI.border}`,
         }}
       >
-        <Group h="100%" px="md" justify="space-between" wrap="nowrap">
-          <Group gap="sm" wrap="nowrap">
-            <ThemeIcon color="violet" radius="md" size={38} variant="filled">
-              LB
-            </ThemeIcon>
-            <Box>
-              <Title order={1} size="h3" lh={1}>
-                LangBase
-              </Title>
-              <Text c="dimmed" size="xs">
-                Low-resource dataset workspace
-              </Text>
-            </Box>
-          </Group>
-          <Group gap="xs">
-            {working ? <Loader size="sm" /> : null}
-            <Badge color={statusColor(dashboard?.pos_model.status ?? "not_started")} radius="sm" variant="light">
-              POS model {dashboard?.pos_model.status.replaceAll("_", " ") ?? "not started"}
-            </Badge>
-          </Group>
+        <Group h="100%" px="md" wrap="nowrap">
+          <Title order={1} size="h3" lh={1.1} truncate>
+            {selectedDataset?.language_name ?? "Language"}
+          </Title>
         </Group>
       </AppShell.Header>
 
@@ -488,56 +494,184 @@ export function App() {
         }}
       >
         <Stack gap="sm" h="100%" p="sm">
-          <Box px="xs" py="sm">
-            <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-              Datasets
-            </Text>
-            <Text c="dimmed" size="xs">
-              One cached research profile per dataset and language.
-            </Text>
-          </Box>
+          {sidebarCollapsed ? (
+            <Stack align="center" gap="sm" py="xs">
+              <ThemeIcon color="violet" radius="md" size={42} variant="filled">
+                LB
+              </ThemeIcon>
+              <Tooltip label="Expand Sidebar" position="right">
+                <ActionIcon
+                  aria-label="Expand sidebar"
+                  color="gray"
+                  onClick={() => setSidebarCollapsed(false)}
+                  size={38}
+                  variant="subtle"
+                >
+                  <TbLayoutSidebarLeftExpand aria-hidden="true" size={20} />
+                </ActionIcon>
+              </Tooltip>
+            </Stack>
+          ) : (
+            <Group justify="space-between" wrap="nowrap" py="xs">
+              <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+                <ThemeIcon color="violet" radius="md" size={42} variant="filled">
+                  LB
+                </ThemeIcon>
+                <Box style={{ minWidth: 0 }}>
+                  <Text fw={850} lh={1} size="lg" truncate>
+                    LangBase
+                  </Text>
+                  <Text c="dimmed" size="xs" truncate>
+                    Low-resource AI workspace
+                  </Text>
+                </Box>
+              </Group>
+              <Tooltip label="Collapse Sidebar">
+                <ActionIcon
+                  aria-label="Collapse sidebar"
+                  color="gray"
+                  onClick={() => setSidebarCollapsed(true)}
+                  size={38}
+                  variant="subtle"
+                >
+                  <TbLayoutSidebarLeftCollapse aria-hidden="true" size={20} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
+          )}
 
           <ScrollArea flex={1} type="hover">
-            <Stack gap={4}>
-              {datasets.map(dataset => (
-                <NavLink
-                  key={dataset.id}
-                  active={dataset.id === selectedDataset?.id}
-                  description={`${dataset.language_name} · ${dataset.language_code}`}
-                  label={dataset.name}
-                  leftSection={
-                    <ThemeIcon
-                      color={dataset.id === selectedDataset?.id ? "green" : "violet"}
-                      radius="md"
-                      size={34}
-                      variant={dataset.id === selectedDataset?.id ? "filled" : "light"}
+            <Stack align={sidebarCollapsed ? "center" : "stretch"} gap={6}>
+              {!sidebarCollapsed ? (
+                <Box px="xs" py={4}>
+                  <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                    Languages
+                  </Text>
+                </Box>
+              ) : null}
+              {datasets.length === 0 ? (
+                <Text c="dimmed" px={sidebarCollapsed ? 0 : "xs"} size="sm" ta={sidebarCollapsed ? "center" : "left"}>
+                  {sidebarCollapsed ? "None" : "No languages yet."}
+                </Text>
+              ) : (
+                datasets.map(dataset =>
+                  sidebarCollapsed ? (
+                    <Tooltip
+                      key={dataset.id}
+                      label={`${dataset.language_name} · ${dataset.name}`}
+                      position="right"
                     >
-                      {dataset.language_code.slice(0, 2).toUpperCase()}
-                    </ThemeIcon>
-                  }
-                  onClick={() => setSelectedDatasetId(dataset.id)}
-                  variant="filled"
-                />
-              ))}
+                      <ActionIcon
+                        aria-label={`Select ${dataset.language_name}`}
+                        color={dataset.id === selectedDataset?.id ? "green" : "gray"}
+                        onClick={() => setSelectedDatasetId(dataset.id)}
+                        radius="md"
+                        size={46}
+                        variant={dataset.id === selectedDataset?.id ? "filled" : "light"}
+                      >
+                        <Text fw={800} size="xs">
+                          {dataset.language_code.slice(0, 2).toUpperCase()}
+                        </Text>
+                      </ActionIcon>
+                    </Tooltip>
+                  ) : (
+                    <NavLink
+                      key={dataset.id}
+                      active={dataset.id === selectedDataset?.id}
+                      description={`${dataset.language_name} · ${dataset.language_code}`}
+                      label={dataset.name}
+                      leftSection={
+                        <ThemeIcon
+                          color={dataset.id === selectedDataset?.id ? "green" : "violet"}
+                          radius="md"
+                          size={34}
+                          variant={dataset.id === selectedDataset?.id ? "filled" : "light"}
+                        >
+                          {dataset.language_code.slice(0, 2).toUpperCase()}
+                        </ThemeIcon>
+                      }
+                      onClick={() => setSelectedDatasetId(dataset.id)}
+                      variant="filled"
+                    />
+                  ),
+                )
+              )}
             </Stack>
           </ScrollArea>
 
           <Divider />
-          <Stack gap="xs">
-            <TextInput label="Dataset" size="xs" value={datasetName} onChange={event => setDatasetName(event.currentTarget.value)} />
-            <Group grow>
-              <TextInput label="Code" size="xs" value={languageCode} onChange={event => setLanguageCode(event.currentTarget.value)} />
-              <TextInput label="Language" size="xs" value={languageName} onChange={event => setLanguageName(event.currentTarget.value)} />
-            </Group>
-            <Button color="green" disabled={working} onClick={() => void createDataset()} size="xs">
-              Create Dataset
-            </Button>
-          </Stack>
+          {sidebarCollapsed ? (
+            <Tooltip label="Expand Sidebar to Add Language" position="right">
+              <ActionIcon
+                aria-label="Expand sidebar to add a language"
+                color="green"
+                onClick={() => setSidebarCollapsed(false)}
+                radius="md"
+                size={46}
+                variant="light"
+              >
+                <TbPlus aria-hidden="true" size={20} />
+              </ActionIcon>
+            </Tooltip>
+          ) : (
+            <Box
+              component="form"
+              onSubmit={event => {
+                event.preventDefault();
+                void createDataset();
+              }}
+            >
+              <Stack gap="xs">
+                <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                  New Language
+                </Text>
+                <TextInput
+                  autoComplete="off"
+                  label="Dataset"
+                  name="datasetName"
+                  onChange={event => setDatasetName(event.currentTarget.value)}
+                  placeholder="Nahuatl field notes…"
+                  size="xs"
+                  value={datasetName}
+                />
+                <Group grow>
+                  <TextInput
+                    autoComplete="off"
+                    label="Code"
+                    name="languageCode"
+                    onChange={event => setLanguageCode(event.currentTarget.value)}
+                    placeholder="nah…"
+                    size="xs"
+                    spellCheck={false}
+                    value={languageCode}
+                  />
+                  <TextInput
+                    autoComplete="off"
+                    label="Language"
+                    name="languageName"
+                    onChange={event => setLanguageName(event.currentTarget.value)}
+                    placeholder="Nahuatl…"
+                    size="xs"
+                    value={languageName}
+                  />
+                </Group>
+                <Button
+                  color="green"
+                  disabled={working || !datasetName.trim() || !languageCode.trim() || !languageName.trim()}
+                  leftSection={<TbPlus aria-hidden="true" size={15} />}
+                  size="xs"
+                  type="submit"
+                >
+                  Create Language
+                </Button>
+              </Stack>
+            </Box>
+          )}
         </Stack>
       </AppShell.Navbar>
 
       <AppShell.Main style={{ background: UI.background, minHeight: "100vh" }}>
-        <Box w="100%" maw={1480} mx="auto" px={{ base: "sm", sm: "lg" }} py="lg">
+        <Box id="workspace-main" w="100%" maw={1480} mx="auto" px={{ base: "sm", sm: "lg" }} py="lg">
           <Stack gap="lg">
             {toast ? (
               <Paper
@@ -556,51 +690,60 @@ export function App() {
               </Paper>
             ) : null}
 
-            <Paper
-              withBorder
-              radius="md"
-              p="lg"
-              style={{ background: UI.panel, borderColor: UI.borderStrong }}
-            >
-              <Group justify="space-between" align="flex-start" gap="md">
-                <Box>
-                  <Text c="violet.3" fw={700} size="xs" tt="uppercase">
-                    {selectedDataset?.language_name ?? "Language"} corpus
-                  </Text>
-                  <Title order={2}>{selectedDataset?.name ?? "Dataset workspace"}</Title>
-                  <Text c="dimmed" mt={4} maw={720}>
-                    Upload sentences and source documents, cache research notes once, review AI suggestions in batches,
-                    and trigger a dataset-specific UPOS tagger.
-                  </Text>
-                </Box>
-                <Group gap="xs">
-                  <Badge color="violet" radius="sm" variant="light">
-                    {dashboard?.item_count ?? 0} text items
-                  </Badge>
-                  <Badge color="yellow" radius="sm" variant="light">
-                    {pendingPosCount} POS pending
-                  </Badge>
-                  <Badge color="green" radius="sm" variant="light">
-                    {acceptedPosCount} accepted
-                  </Badge>
-                </Group>
-              </Group>
-            </Paper>
-
-            <SimpleGrid cols={{ base: 1, md: 4 }} spacing="md">
-              <MetricCard label="Research" value={dashboard?.research ? "Cached" : "Not run"} tone="violet" />
-              <MetricCard label="Imports" value={`${dashboard?.imports.length ?? 0}`} tone="green" />
-              <MetricCard label="OCR Review" value={`${pendingOcrCount} pending`} tone="grape" />
-              <MetricCard label="POS Model" value={dashboard?.pos_model.model_name ?? "Demo trigger"} tone="lime" />
-            </SimpleGrid>
-
-            <Tabs value={activeTab} onChange={setActiveTab} radius="md" variant="pills">
+            <Tabs value={activeTab} onChange={handleTabChange} radius="md" variant="pills">
               <Tabs.List>
-                <Tabs.Tab value="pos">POS Review</Tabs.Tab>
-                <Tabs.Tab value="uploads">Uploads</Tabs.Tab>
-                <Tabs.Tab value="ocr">OCR</Tabs.Tab>
-                <Tabs.Tab value="model">Model Demo</Tabs.Tab>
+                <Tabs.Tab leftSection={<TbDatabase aria-hidden="true" size={16} />} value="all">
+                  All
+                </Tabs.Tab>
+                <Tabs.Tab leftSection={<TbTags aria-hidden="true" size={16} />} value="pos">
+                  POS
+                </Tabs.Tab>
+                <Tabs.Tab leftSection={<TbWand aria-hidden="true" size={16} />} value="ocr">
+                  OCR
+                </Tabs.Tab>
+                <Tabs.Tab leftSection={<TbUpload aria-hidden="true" size={16} />} value="upload">
+                  Upload
+                </Tabs.Tab>
               </Tabs.List>
+
+              <Tabs.Panel value="all" pt="md">
+                <Stack gap="md">
+                  <SimpleGrid cols={{ base: 1, md: 4 }} spacing="md">
+                    <MetricCard label="Research" value={dashboard?.research ? "Cached" : "Not Run"} tone="violet" />
+                    <MetricCard label="Imports" value={`${dashboard?.imports.length ?? 0}`} tone="green" />
+                    <MetricCard label="OCR Review" value={`${pendingOcrCount} Pending`} tone="grape" />
+                    <MetricCard label="POS Model" value={dashboard?.pos_model.model_name ?? "Demo Trigger"} tone="lime" />
+                  </SimpleGrid>
+                  <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                    <PaperPanel title="Imports" eyebrow="Dataset sources">
+                      <ImportsTable imports={dashboard?.imports ?? []} />
+                    </PaperPanel>
+                    <PaperPanel title="Workspace Status" eyebrow="All activity">
+                      <Stack gap="sm">
+                        <Group gap="xs">
+                          <Badge color="violet" radius="sm" variant="light">
+                            {dashboard?.item_count ?? 0} text items
+                          </Badge>
+                          <Badge color="yellow" radius="sm" variant="light">
+                            {pendingPosCount} POS pending
+                          </Badge>
+                          <Badge color="grape" radius="sm" variant="light">
+                            {pendingOcrCount} OCR pending
+                          </Badge>
+                          <Badge color="green" radius="sm" variant="light">
+                            {acceptedPosCount} accepted
+                          </Badge>
+                        </Group>
+                        <Text c="dimmed" size="sm">
+                          Research is {dashboard?.research ? "cached" : "not cached"} and the POS model is{" "}
+                          {dashboard?.pos_model.status.replaceAll("_", " ") ?? "not started"}.
+                        </Text>
+                      </Stack>
+                    </PaperPanel>
+                  </SimpleGrid>
+                  <JobsPanel jobs={jobs} />
+                </Stack>
+              </Tabs.Panel>
 
               <Tabs.Panel value="pos" pt="md">
                 <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
@@ -618,100 +761,7 @@ export function App() {
                     onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
                     onTokenChange={updateTokenDraft}
                   />
-                </SimpleGrid>
-              </Tabs.Panel>
-
-              <Tabs.Panel value="uploads" pt="md">
-                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                  <PaperPanel title="Manual sentences" eyebrow="Text import">
-                    <Stack gap="sm">
-                      <Select
-                        data={[
-                          { value: "text", label: "Manual text" },
-                          { value: "csv", label: "CSV text" },
-                          { value: "txt", label: "TXT lines" },
-                        ]}
-                        label="Source type"
-                        value={manualSource}
-                        onChange={value => setManualSource((value as SourceType | null) ?? "text")}
-                      />
-                      <Textarea
-                        autosize
-                        minRows={8}
-                        label="Sentences"
-                        value={manualText}
-                        onChange={event => setManualText(event.currentTarget.value)}
-                      />
-                      <Button color="green" disabled={working || !manualText.trim()} onClick={() => void importManualText()}>
-                        Import Sentences
-                      </Button>
-                    </Stack>
-                  </PaperPanel>
-
-                  <PaperPanel title="Files and imports" eyebrow="CSV, TXT, PDF, image">
-                    <Stack gap="md">
-                      <Group align="end">
-                        <FileInput
-                          flex={1}
-                          label="Upload file"
-                          placeholder="Choose CSV, TXT, PDF, or image"
-                          value={uploadFile}
-                          onChange={setUploadFile}
-                        />
-                        <Button color="green" disabled={working || !uploadFile} onClick={() => void importFile()}>
-                          Upload
-                        </Button>
-                      </Group>
-                      <ImportsTable imports={dashboard?.imports ?? []} />
-                    </Stack>
-                  </PaperPanel>
-                </SimpleGrid>
-              </Tabs.Panel>
-
-              <Tabs.Panel value="ocr" pt="md">
-                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                  <PaperPanel title="OCR queue" eyebrow="PDF and image extraction">
-                    <Stack gap="sm">
-                      <Text c="dimmed" size="sm">
-                        Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
-                      </Text>
-                      <Button color="green" disabled={working || !latestAssetImport} onClick={() => void runOcr()}>
-                        Run OCR
-                      </Button>
-                    </Stack>
-                  </PaperPanel>
-                  <OcrReviewPanel
-                    suggestions={ocrSuggestions}
-                    drafts={ocrDrafts}
-                    working={working}
-                    onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
-                    onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
-                  />
-                </SimpleGrid>
-              </Tabs.Panel>
-
-              <Tabs.Panel value="model" pt="md">
-                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                  <PaperPanel title="Spanish to Nahuatl" eyebrow="Hugging Face T5 demo endpoint">
-                    <Stack gap="sm">
-                      <Textarea
-                        label="Spanish input"
-                        minRows={4}
-                        value={translateText}
-                        onChange={event => setTranslateText(event.currentTarget.value)}
-                      />
-                      <Button color="green" disabled={working || !translateText.trim()} onClick={() => void translateNahuatl()}>
-                        Translate
-                      </Button>
-                      {translation ? (
-                        <Card withBorder radius="md" p="md" style={{ background: UI.panelSoft, borderColor: UI.border }}>
-                          <Text fw={700}>{translation}</Text>
-                        </Card>
-                      ) : null}
-                    </Stack>
-                  </PaperPanel>
-
-                  <PaperPanel title="Dataset POS tagger" eyebrow="Training trigger">
+                  <PaperPanel title="Dataset POS Tagger" eyebrow="Training trigger">
                     <Stack gap="sm">
                       <Group gap="xs">
                         <Badge color="green" radius="sm" variant="light">
@@ -735,9 +785,91 @@ export function App() {
                   </PaperPanel>
                 </SimpleGrid>
               </Tabs.Panel>
-            </Tabs>
 
-            <JobsPanel jobs={jobs} />
+              <Tabs.Panel value="ocr" pt="md">
+                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                  <PaperPanel title="OCR Queue" eyebrow="PDF and image extraction">
+                    <Stack gap="sm">
+                      <Text c="dimmed" size="sm">
+                        Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
+                      </Text>
+                      <Button color="green" disabled={working || !latestAssetImport} onClick={() => void runOcr()}>
+                        Run OCR
+                      </Button>
+                    </Stack>
+                  </PaperPanel>
+                  <OcrReviewPanel
+                    suggestions={ocrSuggestions}
+                    drafts={ocrDrafts}
+                    working={working}
+                    onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
+                    onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
+                  />
+                </SimpleGrid>
+              </Tabs.Panel>
+
+              <Tabs.Panel value="upload" pt="md">
+                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                  <PaperPanel title="Manual Sentences" eyebrow="Text import">
+                    <Stack gap="md">
+                      <Select
+                        data={[
+                          { value: "text", label: "Manual text" },
+                          { value: "csv", label: "CSV text" },
+                          { value: "txt", label: "TXT lines" },
+                        ]}
+                        label="Source type"
+                        name="manualSource"
+                        value={manualSource}
+                        onChange={value => setManualSource((value as SourceType | null) ?? "text")}
+                      />
+                      <Textarea
+                        autoComplete="off"
+                        autosize
+                        label="Sentences"
+                        minRows={8}
+                        name="manualText"
+                        onChange={event => setManualText(event.currentTarget.value)}
+                        placeholder="Enter one sentence per line…"
+                        value={manualText}
+                      />
+                      <Button
+                        color="green"
+                        disabled={working || !manualText.trim()}
+                        leftSection={<TbFileText aria-hidden="true" size={16} />}
+                        onClick={() => void importManualText()}
+                      >
+                        Import Sentences
+                      </Button>
+                    </Stack>
+                  </PaperPanel>
+
+                  <PaperPanel title="Files and Imports" eyebrow="CSV, TXT, PDF, image">
+                    <Stack gap="md">
+                      <Group align="end" wrap="wrap">
+                        <FileInput
+                          flex={1}
+                          label="Upload file"
+                          name="uploadFile"
+                          placeholder="Choose CSV, TXT, PDF, or image…"
+                          value={uploadFile}
+                          onChange={setUploadFile}
+                        />
+                        <Button
+                          color="green"
+                          disabled={working || !uploadFile}
+                          leftSection={<TbUpload aria-hidden="true" size={16} />}
+                          onClick={() => void importFile()}
+                        >
+                          Upload
+                        </Button>
+                      </Group>
+                      <ImportsTable imports={dashboard?.imports ?? []} />
+                    </Stack>
+                  </PaperPanel>
+                </SimpleGrid>
+              </Tabs.Panel>
+            </Tabs>
           </Stack>
         </Box>
       </AppShell.Main>
@@ -770,7 +902,7 @@ function MetricCard({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function PaperPanel({ title, eyebrow, children }: { title: string; eyebrow: string; children: React.ReactNode }) {
+function PaperPanel({ title, eyebrow, children }: { title: string; eyebrow: string; children: ReactNode }) {
   return (
     <Paper
       withBorder
@@ -913,7 +1045,9 @@ function PosBatchPanel({
                         </Table.Td>
                         <Table.Td>
                           <Select
+                            aria-label={`UPOS tag for ${token.token}`}
                             data={UPOS_TAGS.map(tag => ({ value: tag, label: tag }))}
+                            name={`upos-${suggestion.id}-${token.index}`}
                             size="xs"
                             value={token.suggested_pos}
                             onChange={value => onTokenChange(suggestion.id, token.index, value)}
@@ -955,6 +1089,53 @@ function PosBatchPanel({
 }
 
 function ImportsTable({ imports }: { imports: ImportRecord[] }) {
+  const columns = useMemo(() => {
+    const columnHelper = createColumnHelper<ImportRecord>();
+
+    return [
+      columnHelper.accessor("source_type", {
+        header: "Source",
+        cell: info => (
+          <Badge color={sourceColor(info.getValue())} radius="sm" variant="light">
+            {info.getValue()}
+          </Badge>
+        ),
+      }),
+      columnHelper.accessor(row => row.filename ?? "manual import", {
+        id: "file",
+        header: "File",
+        cell: info => (
+          <Text maw={280} size="sm" truncate>
+            {info.getValue()}
+          </Text>
+        ),
+      }),
+      columnHelper.accessor(row => row.item_count || row.asset_count, {
+        id: "items",
+        header: "Items",
+        cell: info => (
+          <Text size="sm" style={{ fontVariantNumeric: "tabular-nums" }}>
+            {new Intl.NumberFormat().format(info.getValue())}
+          </Text>
+        ),
+      }),
+      columnHelper.accessor("status", {
+        header: "Status",
+        cell: info => (
+          <Badge color={statusColor(info.getValue())} radius="sm" variant="dot">
+            {info.getValue()}
+          </Badge>
+        ),
+      }),
+    ];
+  }, []);
+
+  const table = useReactTable({
+    columns,
+    data: imports,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
   if (imports.length === 0) {
     return (
       <Text c="dimmed" size="sm">
@@ -966,28 +1147,22 @@ function ImportsTable({ imports }: { imports: ImportRecord[] }) {
     <ScrollArea type="auto">
       <Table miw={620} highlightOnHover>
         <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Source</Table.Th>
-            <Table.Th>File</Table.Th>
-            <Table.Th>Items</Table.Th>
-            <Table.Th>Status</Table.Th>
-          </Table.Tr>
+          {table.getHeaderGroups().map(headerGroup => (
+            <Table.Tr key={headerGroup.id}>
+              {headerGroup.headers.map(header => (
+                <Table.Th key={header.id}>
+                  {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                </Table.Th>
+              ))}
+            </Table.Tr>
+          ))}
         </Table.Thead>
         <Table.Tbody>
-          {imports.map(item => (
-            <Table.Tr key={item.id}>
-              <Table.Td>
-                <Badge color={sourceColor(item.source_type)} radius="sm" variant="light">
-                  {item.source_type}
-                </Badge>
-              </Table.Td>
-              <Table.Td>{item.filename ?? "manual import"}</Table.Td>
-              <Table.Td>{item.item_count || item.asset_count}</Table.Td>
-              <Table.Td>
-                <Badge color={statusColor(item.status)} radius="sm" variant="dot">
-                  {item.status}
-                </Badge>
-              </Table.Td>
+          {table.getRowModel().rows.map(row => (
+            <Table.Tr key={row.id}>
+              {row.getVisibleCells().map(cell => (
+                <Table.Td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</Table.Td>
+              ))}
             </Table.Tr>
           ))}
         </Table.Tbody>
@@ -1033,7 +1208,10 @@ function OcrReviewPanel({
                   </Badge>
                 </Group>
                 <Textarea
+                  aria-label={`OCR text for ${suggestion.original_text}`}
+                  autoComplete="off"
                   minRows={5}
+                  name={`ocr-${suggestion.id}`}
                   value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
                   onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
                 />
