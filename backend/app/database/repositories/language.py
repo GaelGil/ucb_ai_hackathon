@@ -16,7 +16,7 @@ class LanguageRepository:
     def get(self, language_id: int) -> Language | None:
         return self.session.get(Language, language_id)
 
-    def list(self, offset: int = 0, limit: int = 100) -> list[Language]:
+    def _list(self, offset: int = 0, limit: int = 100) -> list[Language]:
         statement = select(Language).offset(offset).limit(limit)
         return list(self.session.exec(statement).all())
 
