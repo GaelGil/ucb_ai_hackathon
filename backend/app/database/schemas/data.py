@@ -1,0 +1,24 @@
+from pydantic import BaseModel, ConfigDict
+
+from app.database.models.data import DataType
+
+
+class DataCreate(BaseModel):
+    name: str
+    type: DataType
+    language_id: int
+
+
+class DataUpdate(BaseModel):
+    name: str | None = None
+    type: DataType | None = None
+    language_id: int | None = None
+
+
+class DataRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    type: DataType
+    language_id: int
