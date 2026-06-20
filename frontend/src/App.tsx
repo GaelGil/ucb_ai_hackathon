@@ -1,423 +1,481 @@
 import {
   AppShell,
-  ActionIcon,
   Badge,
   Box,
+  Button,
   Card,
+  Divider,
+  FileInput,
   Group,
+  Loader,
   NavLink,
   Paper,
   ScrollArea,
-  SegmentedControl,
+  Select,
   SimpleGrid,
   Stack,
   Table,
+  Tabs,
   Text,
+  Textarea,
+  TextInput,
   ThemeIcon,
   Title,
-  UnstyledButton,
 } from "@mantine/core";
-import { useDisclosure, useMediaQuery } from "@mantine/hooks";
-import {
-  flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  useReactTable,
-  type ColumnDef,
-  type ColumnFiltersState,
-} from "@tanstack/react-table";
 import { useEffect, useMemo, useState } from "react";
-import { TbLayoutSidebarLeftCollapse, TbLayoutSidebarLeftExpand } from "react-icons/tb";
 
-type Language = {
-  code: string;
-  name: string;
-  region: string;
-  script: string;
-  sample: string;
+const API_BASE_URL = "http://127.0.0.1:8000";
+
+const UPOS_TAGS = [
+  "ADJ",
+  "ADP",
+  "ADV",
+  "AUX",
+  "CCONJ",
+  "DET",
+  "INTJ",
+  "NOUN",
+  "NUM",
+  "PART",
+  "PRON",
+  "PROPN",
+  "PUNCT",
+  "SCONJ",
+  "SYM",
+  "VERB",
+  "X",
+] as const;
+
+const UI = {
+  background: "#030304",
+  header: "rgba(7, 7, 8, 0.96)",
+  navbar: "#09090b",
+  panel: "rgba(18, 18, 22, 0.96)",
+  panelSoft: "rgba(14, 14, 18, 0.84)",
+  border: "rgba(255, 255, 255, 0.11)",
+  borderStrong: "rgba(168, 85, 247, 0.32)",
 };
 
-type TaskCategory = "all" | "open-source" | "pos" | "ocr" | "upload";
-type SourceTag = "Image" | "PDF" | "Text";
-type SourceFilter = SourceTag | "All";
-type TaskStatus = "Ready" | "Review" | "Queued" | "Synced";
+type SourceType = "text" | "csv" | "txt" | "pdf" | "image";
+type SuggestionType = "pos" | "ocr";
+type SuggestionStatus = "pending" | "approved" | "denied" | "edited";
 
-type TaskRow = {
+type Dataset = {
   id: string;
-  languageCode: string;
-  title: string;
-  category: Exclude<TaskCategory, "all">;
-  source: SourceTag;
-  status: TaskStatus;
-  score: string;
-  updated: string;
+  name: string;
+  language_code: string;
+  language_name: string;
 };
 
-type TaskCard = {
-  id: TaskCategory;
-  label: string;
-  description: string;
-  stat: string;
-  tone: "blue" | "cyan" | "teal" | "orange" | "grape";
+type ImportRecord = {
+  id: string;
+  dataset_id: string;
+  source_type: SourceType;
+  filename: string | null;
+  item_count: number;
+  asset_count: number;
+  status: string;
+  created_at: string;
 };
 
-const languages: Language[] = [
-  { code: "en", name: "English", region: "Global", script: "Latin", sample: "Community moderation" },
-  { code: "es", name: "Spanish", region: "Latin America", script: "Latin", sample: "Policy summaries" },
-  { code: "fr", name: "French", region: "West Africa", script: "Latin", sample: "Health forms" },
-  { code: "hi", name: "Hindi", region: "India", script: "Devanagari", sample: "Public notices" },
-  { code: "ar", name: "Arabic", region: "MENA", script: "Arabic", sample: "Civic records" },
-  { code: "sw", name: "Swahili", region: "East Africa", script: "Latin", sample: "Education content" },
-  { code: "pt", name: "Portuguese", region: "Brazil", script: "Latin", sample: "Support tickets" },
-  { code: "zh", name: "Mandarin", region: "China", script: "Simplified", sample: "Dataset review" },
-];
+type ResearchArtifact = {
+  id: string;
+  summary: string;
+  guidelines: string[];
+  sources: { title: string; url: string; excerpt: string }[];
+};
 
-const taskCards: TaskCard[] = [
-  {
-    id: "all",
-    label: "All",
-    description: "Every active item for the selected language.",
-    stat: "24 rows",
-    tone: "blue",
-  },
-  {
-    id: "open-source",
-    label: "Open Source Contributions",
-    description: "Community translations, issue triage, and dataset patches.",
-    stat: "8 merged",
-    tone: "cyan",
-  },
-  {
-    id: "pos",
-    label: "Part-Of-Speech Tagging",
-    description: "Token labeling, review queues, and quality checks.",
-    stat: "96.4%",
-    tone: "teal",
-  },
-  {
-    id: "ocr",
-    label: "OCR",
-    description: "Image and PDF extraction runs awaiting validation.",
-    stat: "14 scans",
-    tone: "orange",
-  },
-  {
-    id: "upload",
-    label: "Upload",
-    description: "Incoming files and text batches ready to process.",
-    stat: "6 new",
-    tone: "grape",
-  },
-];
+type TokenSuggestion = {
+  index: number;
+  token: string;
+  suggested_pos: string;
+  confidence: number;
+  rationale: string;
+};
 
-const sourceFilters: SourceFilter[] = ["All", "Image", "PDF", "Text"];
+type Suggestion = {
+  id: string;
+  type: SuggestionType;
+  status: SuggestionStatus;
+  original_text: string;
+  suggested_text: string | null;
+  tokens: TokenSuggestion[];
+  confidence: number;
+  rationale: string;
+};
 
-const rows: TaskRow[] = languages.flatMap((language, languageIndex) => [
-  {
-    id: `${language.code}-open-source-issue`,
-    languageCode: language.code,
-    title: `${language.name} glossary pull request`,
-    category: "open-source",
-    source: "Text",
-    status: languageIndex % 2 === 0 ? "Synced" : "Review",
-    score: `${42 + languageIndex} edits`,
-    updated: "Jun 18, 2026",
-  },
-  {
-    id: `${language.code}-open-source-corpus`,
-    languageCode: language.code,
-    title: `${language.sample} corpus cleanup`,
-    category: "open-source",
-    source: "PDF",
-    status: "Ready",
-    score: `${18 + languageIndex} files`,
-    updated: "Jun 17, 2026",
-  },
-  {
-    id: `${language.code}-pos-annotation`,
-    languageCode: language.code,
-    title: `${language.script} POS annotation batch`,
-    category: "pos",
-    source: "Text",
-    status: "Ready",
-    score: `${94 + (languageIndex % 4)}%`,
-    updated: "Jun 16, 2026",
-  },
-  {
-    id: `${language.code}-pos-review`,
-    languageCode: language.code,
-    title: `${language.region} grammar review set`,
-    category: "pos",
-    source: "PDF",
-    status: "Queued",
-    score: `${1_200 + languageIndex * 80} tokens`,
-    updated: "Jun 15, 2026",
-  },
-  {
-    id: `${language.code}-ocr-image`,
-    languageCode: language.code,
-    title: `${language.name} signage OCR run`,
-    category: "ocr",
-    source: "Image",
-    status: languageIndex % 3 === 0 ? "Review" : "Ready",
-    score: `${88 + (languageIndex % 8)}%`,
-    updated: "Jun 14, 2026",
-  },
-  {
-    id: `${language.code}-ocr-doc`,
-    languageCode: language.code,
-    title: `${language.sample} PDF extraction`,
-    category: "ocr",
-    source: "PDF",
-    status: "Synced",
-    score: `${12 + languageIndex} pages`,
-    updated: "Jun 13, 2026",
-  },
-  {
-    id: `${language.code}-upload-image`,
-    languageCode: language.code,
-    title: `${language.name} image upload queue`,
-    category: "upload",
-    source: "Image",
-    status: "Queued",
-    score: `${5 + languageIndex} assets`,
-    updated: "Jun 12, 2026",
-  },
-  {
-    id: `${language.code}-upload-text`,
-    languageCode: language.code,
-    title: `${language.region} text test import`,
-    category: "upload",
-    source: "Text",
-    status: "Ready",
-    score: `${2 + languageIndex} batches`,
-    updated: "Jun 11, 2026",
-  },
-]);
+type PosModel = {
+  status: string;
+  accepted_sentence_count: number;
+  minimum_examples: number;
+  model_name: string | null;
+  metrics: Record<string, number>;
+};
 
-const defaultLanguageCode = languages[0]?.code ?? "en";
-const categoryLabels = new Map<TaskCategory, string>(taskCards.map(card => [card.id, card.label]));
-const categoryValues = new Set<TaskCategory>(taskCards.map(card => card.id));
-const sourceValues = new Set<SourceFilter>(sourceFilters);
+type Dashboard = {
+  dataset: Dataset;
+  imports: ImportRecord[];
+  research: ResearchArtifact | null;
+  suggestion_counts: Record<string, number>;
+  item_count: number;
+  pos_model: PosModel;
+};
 
-function categoryLabel(category: TaskCategory | Exclude<TaskCategory, "all">) {
-  return categoryLabels.get(category) ?? category;
-}
+type Job = {
+  id: string;
+  type: string;
+  status: string;
+  progress: number;
+  message: string;
+  error: string | null;
+};
 
-function initialLanguageCode() {
-  if (typeof window === "undefined") return defaultLanguageCode;
+type Toast = {
+  tone: "violet" | "red" | "green";
+  message: string;
+};
 
-  const languageParam = new URLSearchParams(window.location.search).get("lang");
-  return languages.some(language => language.code === languageParam) ? languageParam! : defaultLanguageCode;
-}
+type DraftMap = Record<string, TokenSuggestion[]>;
+type TextDraftMap = Record<string, string>;
 
-function initialCategory() {
-  if (typeof window === "undefined") return "all";
-
-  const viewParam = new URLSearchParams(window.location.search).get("view") as TaskCategory | null;
-  return viewParam && categoryValues.has(viewParam) ? viewParam : "all";
-}
-
-function initialSourceFilter() {
-  if (typeof window === "undefined") return "All";
-
-  const sourceParam = new URLSearchParams(window.location.search).get("source");
-  const normalized = sourceFilters.find(source => source.toLowerCase() === sourceParam?.toLowerCase());
-  return normalized ?? "All";
-}
-
-function statusColor(status: TaskStatus) {
-  switch (status) {
-    case "Ready":
-      return "green";
-    case "Review":
-      return "yellow";
-    case "Queued":
-      return "gray";
-    case "Synced":
-      return "blue";
+async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: options?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed with ${response.status}`);
   }
+  return response.json() as Promise<T>;
 }
 
-function sourceColor(source: SourceTag) {
+function sourceColor(source: SourceType) {
   switch (source) {
-    case "Image":
-      return "orange";
-    case "PDF":
+    case "text":
+    case "txt":
+      return "green";
+    case "csv":
+      return "violet";
+    case "pdf":
       return "red";
-    case "Text":
-      return "teal";
+    case "image":
+      return "grape";
   }
 }
 
-const columns: ColumnDef<TaskRow>[] = [
-  {
-    accessorKey: "title",
-    header: "Item",
-    cell: info => (
-      <Text fw={650} size="sm">
-        {info.getValue<string>()}
-      </Text>
-    ),
-  },
-  {
-    accessorKey: "category",
-    header: "Task",
-    filterFn: "equalsString",
-    cell: info => (
-      <Text c="dimmed" size="sm">
-        {categoryLabel(info.getValue<Exclude<TaskCategory, "all">>())}
-      </Text>
-    ),
-  },
-  {
-    accessorKey: "source",
-    header: "Source",
-    filterFn: "equalsString",
-    cell: info => {
-      const source = info.getValue<SourceTag>();
-      return (
-        <Badge color={sourceColor(source)} radius="sm" variant="light">
-          {source}
-        </Badge>
-      );
-    },
-  },
-  {
-    accessorKey: "status",
-    header: "Status",
-    cell: info => {
-      const status = info.getValue<TaskStatus>();
-      return (
-        <Badge color={statusColor(status)} radius="sm" variant="dot">
-          {status}
-        </Badge>
-      );
-    },
-  },
-  {
-    accessorKey: "score",
-    header: "Score",
-    cell: info => (
-      <Text ff="monospace" size="sm">
-        {info.getValue<string>()}
-      </Text>
-    ),
-  },
-  {
-    accessorKey: "updated",
-    header: "Updated",
-    cell: info => (
-      <Text c="dimmed" size="sm">
-        {info.getValue<string>()}
-      </Text>
-    ),
-  },
-];
+function statusColor(status: string) {
+  switch (status) {
+    case "approved":
+    case "ready":
+    case "succeeded":
+      return "green";
+    case "edited":
+    case "running":
+      return "violet";
+    case "denied":
+    case "failed":
+      return "red";
+    case "pending":
+    case "queued":
+      return "yellow";
+    default:
+      return "gray";
+  }
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
 
 export function App() {
-  const [mobileOpened, { open: openMobile, close: closeMobile }] = useDisclosure();
-  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
-  const [selectedLanguageCode, setSelectedLanguageCode] = useState(initialLanguageCode);
-  const [activeCategory, setActiveCategory] = useState<TaskCategory>(initialCategory);
-  const [sourceFilter, setSourceFilter] = useState<SourceFilter>(initialSourceFilter);
-  const isDesktop = useMediaQuery("(min-width: 48em)");
-  const compactSidebar = Boolean(isDesktop && desktopCollapsed);
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [ocrSuggestions, setOcrSuggestions] = useState<Suggestion[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [activeTab, setActiveTab] = useState<string | null>("pos");
 
-  const selectedLanguage = useMemo(
-    () => languages.find(language => language.code === selectedLanguageCode) ?? languages[0],
-    [selectedLanguageCode],
+  const [datasetName, setDatasetName] = useState("Nahuatl field notes");
+  const [languageCode, setLanguageCode] = useState("nah");
+  const [languageName, setLanguageName] = useState("Nahuatl");
+  const [manualText, setManualText] = useState("muchas flores son blancas\nel agua corre rapido");
+  const [manualSource, setManualSource] = useState<SourceType>("text");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [translateText, setTranslateText] = useState("muchas flores son blancas");
+  const [translation, setTranslation] = useState("");
+  const [tokenDrafts, setTokenDrafts] = useState<DraftMap>({});
+  const [ocrDrafts, setOcrDrafts] = useState<TextDraftMap>({});
+
+  const selectedDataset = useMemo(
+    () => datasets.find(dataset => dataset.id === selectedDatasetId) ?? datasets[0] ?? null,
+    [datasets, selectedDatasetId],
   );
 
-  const selectedLanguageRows = useMemo(
-    () => rows.filter(row => row.languageCode === selectedLanguageCode),
-    [selectedLanguageCode],
+  const latestAssetImport = useMemo(
+    () => dashboard?.imports.find(item => item.source_type === "pdf" || item.source_type === "image") ?? null,
+    [dashboard?.imports],
   );
 
-  const columnFilters = useMemo<ColumnFiltersState>(() => {
-    const filters: ColumnFiltersState = [];
-
-    if (activeCategory !== "all") {
-      filters.push({ id: "category", value: activeCategory });
-    }
-
-    if (sourceFilter !== "All") {
-      filters.push({ id: "source", value: sourceFilter });
-    }
-
-    return filters;
-  }, [activeCategory, sourceFilter]);
-
-  const table = useReactTable({
-    data: selectedLanguageRows,
-    columns,
-    state: { columnFilters },
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-  });
-
-  const visibleRows = table.getRowModel().rows;
-  const activeCard = taskCards.find(card => card.id === activeCategory) ?? taskCards[0];
+  const pendingPosCount = dashboard?.suggestion_counts["pos:pending"] ?? 0;
+  const acceptedPosCount =
+    (dashboard?.suggestion_counts["pos:approved"] ?? 0) + (dashboard?.suggestion_counts["pos:edited"] ?? 0);
+  const pendingOcrCount = dashboard?.suggestion_counts["ocr:pending"] ?? 0;
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    params.set("lang", selectedLanguageCode);
-    params.set("view", activeCategory);
-    params.set("source", sourceFilter.toLowerCase());
+    void loadDatasets();
+  }, []);
 
-    window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}${window.location.hash}`);
-  }, [activeCategory, selectedLanguageCode, sourceFilter]);
+  useEffect(() => {
+    if (selectedDatasetId) {
+      void refreshWorkspace(selectedDatasetId);
+    }
+  }, [selectedDatasetId]);
 
-  const selectLanguage = (languageCode: string) => {
-    setSelectedLanguageCode(languageCode);
-    setActiveCategory("all");
-    setSourceFilter("All");
-    closeMobile();
-  };
+  async function loadDatasets() {
+    setLoading(true);
+    try {
+      const rows = await api<Dataset[]>("/datasets");
+      setDatasets(rows);
+      setSelectedDatasetId(current => current || rows[0]?.id || "");
+    } catch (error) {
+      showError(error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshWorkspace(datasetId = selectedDatasetId) {
+    if (!datasetId) return;
+    try {
+      const [nextDashboard, nextSuggestions, nextOcrSuggestions] = await Promise.all([
+        api<Dashboard>(`/datasets/${datasetId}/dashboard`),
+        api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`),
+        api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`),
+      ]);
+      setDashboard(nextDashboard);
+      setSuggestions(nextSuggestions.suggestions);
+      setOcrSuggestions(nextOcrSuggestions.suggestions);
+      setTokenDrafts(previous => {
+        const next = { ...previous };
+        for (const suggestion of nextSuggestions.suggestions) {
+          next[suggestion.id] ??= suggestion.tokens;
+        }
+        return next;
+      });
+      setOcrDrafts(previous => {
+        const next = { ...previous };
+        for (const suggestion of nextOcrSuggestions.suggestions) {
+          next[suggestion.id] ??= suggestion.suggested_text ?? "";
+        }
+        return next;
+      });
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  async function runAction<T>(callback: () => Promise<T>, successMessage: string) {
+    setWorking(true);
+    try {
+      const result = await callback();
+      setToast({ tone: "green", message: successMessage });
+      await refreshWorkspace();
+      return result;
+    } catch (error) {
+      showError(error);
+      return null;
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function createDataset() {
+    const created = await runAction(
+      () =>
+        api<Dataset>("/datasets", {
+          method: "POST",
+          body: JSON.stringify({
+            name: datasetName,
+            language_code: languageCode,
+            language_name: languageName,
+          }),
+        }),
+      "Dataset created",
+    );
+    if (created) {
+      const rows = await api<Dataset[]>("/datasets");
+      setDatasets(rows);
+      setSelectedDatasetId(created.id);
+    }
+  }
+
+  async function importManualText() {
+    if (!selectedDatasetId || !manualText.trim()) return;
+    await runAction(async () => {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/imports`, {
+        method: "POST",
+        body: JSON.stringify({ text: manualText, source_type: manualSource }),
+      });
+      rememberJob(response.job);
+      return response;
+    }, "Text imported");
+  }
+
+  async function importFile() {
+    if (!selectedDatasetId || !uploadFile) return;
+    const form = new FormData();
+    form.append("file", uploadFile);
+    await runAction(async () => {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/imports`, {
+        method: "POST",
+        body: form,
+      });
+      rememberJob(response.job);
+      setUploadFile(null);
+      return response;
+    }, "File imported");
+  }
+
+  async function runResearch(force = false) {
+    if (!selectedDatasetId) return;
+    await runAction(async () => {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/research?force=${force}`, {
+        method: "POST",
+      });
+      rememberJob(response.job);
+      return response;
+    }, force ? "Research refreshed" : "Research ready");
+  }
+
+  async function generatePosSuggestions() {
+    if (!selectedDatasetId) return;
+    await runAction(async () => {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/pos-suggestions`, {
+        method: "POST",
+        body: JSON.stringify({ limit: 5 }),
+      });
+      rememberJob(response.job);
+      return response;
+    }, "Generated POS suggestions");
+  }
+
+  async function runOcr() {
+    if (!selectedDatasetId) return;
+    await runAction(async () => {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/ocr`, {
+        method: "POST",
+        body: JSON.stringify({ import_id: latestAssetImport?.id ?? null }),
+      });
+      rememberJob(response.job);
+      return response;
+    }, "OCR suggestions generated");
+  }
+
+  async function reviewSuggestion(suggestion: Suggestion, action: SuggestionStatus) {
+    await runAction(async () => {
+      const payload =
+        action === "edited" && suggestion.type === "pos"
+          ? { action, edited_tokens: tokenDrafts[suggestion.id] ?? suggestion.tokens }
+          : action === "edited"
+            ? { action, edited_text: ocrDrafts[suggestion.id] ?? suggestion.suggested_text ?? "" }
+            : { action };
+      return api<Suggestion>(`/suggestions/${suggestion.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    }, action === "approved" ? "Suggestion approved" : action === "denied" ? "Suggestion denied" : "Suggestion edited");
+  }
+
+  async function trainPosModel() {
+    if (!selectedDatasetId) return;
+    await runAction(async () => {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/pos-model/train`, {
+        method: "POST",
+        body: JSON.stringify({ minimum_examples: 20, demo_override: true }),
+      });
+      rememberJob(response.job);
+      return response;
+    }, "POS model trigger completed");
+  }
+
+  async function translateNahuatl() {
+    await runAction(async () => {
+      const response = await api<{ output_text: string; provider: string }>("/models/nahuatl/translate", {
+        method: "POST",
+        body: JSON.stringify({ text: translateText, direction: "spanish_to_nahuatl" }),
+      });
+      setTranslation(`${response.output_text} (${response.provider})`);
+      return response;
+    }, "Translation generated");
+  }
+
+  function rememberJob(job: Job) {
+    setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)].slice(0, 5));
+  }
+
+  function updateTokenDraft(suggestionId: string, tokenIndex: number, tag: string | null) {
+    if (!tag) return;
+    setTokenDrafts(previous => {
+      const current = previous[suggestionId] ?? [];
+      return {
+        ...previous,
+        [suggestionId]: current.map(token =>
+          token.index === tokenIndex ? { ...token, suggested_pos: tag } : token,
+        ),
+      };
+    });
+  }
+
+  function showError(error: unknown) {
+    setToast({ tone: "red", message: error instanceof Error ? error.message : "Request failed" });
+  }
+
+  if (loading) {
+    return (
+      <Box bg={UI.background} mih="100vh" p="xl">
+        <Group justify="center" mt="20vh">
+          <Loader color="violet" />
+          <Text c="dimmed">Loading workspace</Text>
+        </Group>
+      </Box>
+    );
+  }
 
   return (
     <AppShell
       header={{ height: 64 }}
-      layout="alt"
-      navbar={{ width: { base: 304, sm: desktopCollapsed ? 92 : 304 }, breakpoint: "sm", collapsed: { mobile: !mobileOpened } }}
+      navbar={{ width: 300, breakpoint: "sm", collapsed: { mobile: false } }}
       padding={0}
     >
       <AppShell.Header
         style={{
-          background: "rgba(9, 14, 28, 0.92)",
-          backdropFilter: "blur(18px)",
-          borderBottom: "1px solid rgba(148, 163, 184, 0.16)",
+          background: UI.header,
+          borderBottom: `1px solid ${UI.border}`,
         }}
       >
         <Group h="100%" px="md" justify="space-between" wrap="nowrap">
-          <Group gap="sm" wrap="nowrap" miw={0}>
-            <ActionIcon
-              aria-label="Open sidebar"
-              color="gray"
-              hiddenFrom="sm"
-              onClick={openMobile}
-              radius="md"
-              size="lg"
-              variant="subtle"
-            >
-              <TbLayoutSidebarLeftExpand size={21} />
-            </ActionIcon>
+          <Group gap="sm" wrap="nowrap">
+            <ThemeIcon color="violet" radius="md" size={38} variant="filled">
+              LB
+            </ThemeIcon>
             <Box>
-              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-                {activeCard?.label ?? "All"} workspace
-              </Text>
-              <Text fw={750} size="sm">
-                {selectedLanguage?.name ?? "Language"} language dashboard
+              <Title order={1} size="h3" lh={1}>
+                LangBase
+              </Title>
+              <Text c="dimmed" size="xs">
+                Low-resource dataset workspace
               </Text>
             </Box>
           </Group>
-
-          <Group gap="xs" wrap="nowrap">
-            <Badge color="blue" radius="sm" variant="light">
-              {selectedLanguage?.name ?? "Language"} active
-            </Badge>
-            <Badge color="gray" radius="sm" variant="outline" visibleFrom="xs">
-              {selectedLanguageRows.length} rows
+          <Group gap="xs">
+            {working ? <Loader size="sm" /> : null}
+            <Badge color={statusColor(dashboard?.pos_model.status ?? "not_started")} radius="sm" variant="light">
+              POS model {dashboard?.pos_model.status.replaceAll("_", " ") ?? "not started"}
             </Badge>
           </Group>
         </Group>
@@ -425,293 +483,613 @@ export function App() {
 
       <AppShell.Navbar
         style={{
-          background: "#0d1326",
-          borderRight: "1px solid rgba(148, 163, 184, 0.16)",
+          background: UI.navbar,
+          borderRight: `1px solid ${UI.border}`,
         }}
       >
-        <Stack gap="xs" h="100%" p="sm">
-          <Box
-            px={compactSidebar ? 0 : "xs"}
-            py="xs"
-            style={{ borderBottom: "1px solid rgba(148, 163, 184, 0.16)" }}
-          >
-            {compactSidebar ? (
-              <Stack align="center" gap="xs">
-                <ActionIcon
-                  aria-label="Expand sidebar"
-                  color="gray"
-                  onClick={() => setDesktopCollapsed(false)}
-                  radius="md"
-                  size="lg"
-                  variant="subtle"
-                >
-                  <TbLayoutSidebarLeftExpand size={21} />
-                </ActionIcon>
-                <ThemeIcon
-                  radius="md"
-                  size={38}
-                  variant="filled"
-                  style={{
-                    background: "linear-gradient(135deg, #3b82f6, #14b8a6)",
-                    color: "white",
-                    fontSize: "0.78rem",
-                    fontWeight: 900,
-                    letterSpacing: 0,
-                  }}
-                >
-                  LB
-                </ThemeIcon>
-              </Stack>
-            ) : (
-              <Group h={48} justify="space-between" wrap="nowrap">
-                <Group gap="sm" wrap="nowrap" miw={0}>
-                  <ThemeIcon
-                    radius="md"
-                    size={38}
-                    variant="filled"
-                    style={{
-                      background: "linear-gradient(135deg, #3b82f6, #14b8a6)",
-                      color: "white",
-                      fontSize: "0.78rem",
-                      fontWeight: 900,
-                      letterSpacing: 0,
-                    }}
-                  >
-                    LB
-                  </ThemeIcon>
-                  <Box miw={0}>
-                    <Title order={1} size="h3" lh={1}>
-                      LangBase
-                    </Title>
-                    <Text c="dimmed" size="xs" visibleFrom="xs">
-                      Language intelligence workspace
-                    </Text>
-                  </Box>
-                </Group>
-                <ActionIcon
-                  aria-label="Collapse sidebar"
-                  color="gray"
-                  onClick={() => setDesktopCollapsed(true)}
-                  radius="md"
-                  size="lg"
-                  variant="subtle"
-                  visibleFrom="sm"
-                >
-                  <TbLayoutSidebarLeftCollapse size={21} />
-                </ActionIcon>
-                <ActionIcon
-                  aria-label="Hide sidebar"
-                  color="gray"
-                  hiddenFrom="sm"
-                  onClick={closeMobile}
-                  radius="md"
-                  size="lg"
-                  variant="subtle"
-                >
-                  <TbLayoutSidebarLeftCollapse size={21} />
-                </ActionIcon>
-              </Group>
-            )}
+        <Stack gap="sm" h="100%" p="sm">
+          <Box px="xs" py="sm">
+            <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+              Datasets
+            </Text>
+            <Text c="dimmed" size="xs">
+              One cached research profile per dataset and language.
+            </Text>
           </Box>
-
-          {!compactSidebar ? (
-            <Box px="xs" py="xs">
-              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-                Languages
-              </Text>
-              <Text c="dimmed" size="xs">
-                Pick a workspace corpus.
-              </Text>
-            </Box>
-          ) : null}
 
           <ScrollArea flex={1} type="hover">
             <Stack gap={4}>
-              {languages.map(language => (
+              {datasets.map(dataset => (
                 <NavLink
-                  key={language.code}
-                  active={language.code === selectedLanguageCode}
-                  aria-label={`Select ${language.name}`}
-                  description={compactSidebar ? undefined : `${language.region} - ${language.script}`}
-                  label={compactSidebar ? language.code.toUpperCase() : language.name}
+                  key={dataset.id}
+                  active={dataset.id === selectedDataset?.id}
+                  description={`${dataset.language_name} · ${dataset.language_code}`}
+                  label={dataset.name}
                   leftSection={
-                    <ThemeIcon radius="md" size={34} variant={language.code === selectedLanguageCode ? "filled" : "light"}>
-                      {language.code.toUpperCase()}
+                    <ThemeIcon
+                      color={dataset.id === selectedDataset?.id ? "green" : "violet"}
+                      radius="md"
+                      size={34}
+                      variant={dataset.id === selectedDataset?.id ? "filled" : "light"}
+                    >
+                      {dataset.language_code.slice(0, 2).toUpperCase()}
                     </ThemeIcon>
                   }
-                  onClick={() => selectLanguage(language.code)}
+                  onClick={() => setSelectedDatasetId(dataset.id)}
                   variant="filled"
                 />
               ))}
             </Stack>
           </ScrollArea>
+
+          <Divider />
+          <Stack gap="xs">
+            <TextInput label="Dataset" size="xs" value={datasetName} onChange={event => setDatasetName(event.currentTarget.value)} />
+            <Group grow>
+              <TextInput label="Code" size="xs" value={languageCode} onChange={event => setLanguageCode(event.currentTarget.value)} />
+              <TextInput label="Language" size="xs" value={languageName} onChange={event => setLanguageName(event.currentTarget.value)} />
+            </Group>
+            <Button color="green" disabled={working} onClick={() => void createDataset()} size="xs">
+              Create Dataset
+            </Button>
+          </Stack>
         </Stack>
       </AppShell.Navbar>
 
-      <AppShell.Main
-        style={{
-          background:
-            "radial-gradient(circle at top right, rgba(37, 99, 235, 0.18), transparent 34rem), linear-gradient(180deg, #11182d 0%, #0b1020 48%)",
-          minHeight: "100vh",
-        }}
-      >
-        <Box w="100%" maw={1440} mx="auto" px={{ base: "sm", sm: "lg" }} py="lg">
+      <AppShell.Main style={{ background: UI.background, minHeight: "100vh" }}>
+        <Box w="100%" maw={1480} mx="auto" px={{ base: "sm", sm: "lg" }} py="lg">
           <Stack gap="lg">
+            {toast ? (
+              <Paper
+                aria-live="polite"
+                withBorder
+                p="sm"
+                radius="md"
+                style={{ background: UI.panelSoft, borderColor: `var(--mantine-color-${toast.tone}-6)` }}
+              >
+                <Group justify="space-between">
+                  <Text size="sm">{toast.message}</Text>
+                  <Button color="violet" size="compact-xs" variant="subtle" onClick={() => setToast(null)}>
+                    Dismiss
+                  </Button>
+                </Group>
+              </Paper>
+            ) : null}
+
             <Paper
               withBorder
-              radius="lg"
+              radius="md"
               p="lg"
-              shadow="xl"
-              style={{
-                background: "rgba(15, 23, 42, 0.76)",
-                borderColor: "rgba(148, 163, 184, 0.16)",
-                overflow: "hidden",
-              }}
+              style={{ background: UI.panel, borderColor: UI.borderStrong }}
             >
               <Group justify="space-between" align="flex-start" gap="md">
                 <Box>
-                  <Text c="blue.3" fw={700} size="xs" tt="uppercase">
-                    {selectedLanguage?.region ?? "Global"} corpus
+                  <Text c="violet.3" fw={700} size="xs" tt="uppercase">
+                    {selectedDataset?.language_name ?? "Language"} corpus
                   </Text>
-                  <Title order={2} size="h1">
-                    {selectedLanguage?.name ?? "Language"} dashboard
-                  </Title>
-                  <Text c="dimmed" mt={4} maw={620}>
-                    Track contributions, tagging, OCR, and upload queues from one compact language workspace.
+                  <Title order={2}>{selectedDataset?.name ?? "Dataset workspace"}</Title>
+                  <Text c="dimmed" mt={4} maw={720}>
+                    Upload sentences and source documents, cache research notes once, review AI suggestions in batches,
+                    and trigger a dataset-specific UPOS tagger.
                   </Text>
                 </Box>
-
                 <Group gap="xs">
-                  <Badge color="gray" radius="sm" variant="outline">
-                    {selectedLanguage?.script ?? "Script"}
+                  <Badge color="violet" radius="sm" variant="light">
+                    {dashboard?.item_count ?? 0} text items
                   </Badge>
-                  <Badge color="blue" radius="sm" variant="light">
-                    {selectedLanguageRows.length} rows
+                  <Badge color="yellow" radius="sm" variant="light">
+                    {pendingPosCount} POS pending
+                  </Badge>
+                  <Badge color="green" radius="sm" variant="light">
+                    {acceptedPosCount} accepted
                   </Badge>
                 </Group>
               </Group>
             </Paper>
 
-            <SimpleGrid cols={{ base: 1, xs: 2, lg: 5 }} spacing="md">
-              {taskCards.map(card => (
-                <UnstyledButton
-                  key={card.id}
-                  aria-pressed={activeCategory === card.id}
-                  onClick={() => setActiveCategory(card.id)}
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    borderRadius: "var(--mantine-radius-md)",
-                  }}
-                >
-                  <Card
-                    withBorder
-                    radius="md"
-                    p="md"
-                    shadow={activeCategory === card.id ? "md" : "sm"}
-                    style={{
-                      background: activeCategory === card.id ? "rgba(17, 31, 58, 0.92)" : "rgba(15, 23, 42, 0.76)",
-                      borderColor:
-                        activeCategory === card.id ? "rgba(96, 165, 250, 0.64)" : "rgba(148, 163, 184, 0.16)",
-                      height: "100%",
-                      minHeight: 164,
-                      transition: "border-color 140ms ease, background 140ms ease, transform 140ms ease",
-                    }}
-                  >
-                    <Group justify="space-between" align="flex-start" mb="lg" wrap="nowrap">
-                      <ThemeIcon color={card.tone} radius="md" size={38} variant={activeCategory === card.id ? "filled" : "light"}>
-                        {card.label.slice(0, 2)}
-                      </ThemeIcon>
-                      <Badge color={card.tone} radius="sm" variant="light">
-                        {card.stat}
-                      </Badge>
-                    </Group>
-                    <Text fw={800} size="sm">
-                      {card.label}
-                    </Text>
-                    <Text c="dimmed" lineClamp={2} mt={6} size="xs">
-                      {card.description}
-                    </Text>
-                  </Card>
-                </UnstyledButton>
-              ))}
+            <SimpleGrid cols={{ base: 1, md: 4 }} spacing="md">
+              <MetricCard label="Research" value={dashboard?.research ? "Cached" : "Not run"} tone="violet" />
+              <MetricCard label="Imports" value={`${dashboard?.imports.length ?? 0}`} tone="green" />
+              <MetricCard label="OCR Review" value={`${pendingOcrCount} pending`} tone="grape" />
+              <MetricCard label="POS Model" value={dashboard?.pos_model.model_name ?? "Demo trigger"} tone="lime" />
             </SimpleGrid>
 
-            <Paper
-              withBorder
-              radius="lg"
-              shadow="xl"
-              style={{
-                background: "rgba(15, 23, 42, 0.76)",
-                borderColor: "rgba(148, 163, 184, 0.16)",
-                overflow: "hidden",
-              }}
-            >
-              <Group justify="space-between" align="flex-start" p="lg" gap="md">
-                <Box>
-                  <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-                    {activeCard?.label ?? "All"} table
-                  </Text>
-                  <Title order={3} size="h3">
-                    {visibleRows.length} matching items
-                  </Title>
-                </Box>
+            <Tabs value={activeTab} onChange={setActiveTab} radius="md" variant="pills">
+              <Tabs.List>
+                <Tabs.Tab value="pos">POS Review</Tabs.Tab>
+                <Tabs.Tab value="uploads">Uploads</Tabs.Tab>
+                <Tabs.Tab value="ocr">OCR</Tabs.Tab>
+                <Tabs.Tab value="model">Model Demo</Tabs.Tab>
+              </Tabs.List>
 
-                <SegmentedControl
-                  aria-label="Filter by source type"
-                  data={sourceFilters}
-                  onChange={value => {
-                    if (sourceValues.has(value as SourceFilter)) {
-                      setSourceFilter(value as SourceFilter);
-                    }
-                  }}
-                  radius="md"
-                  size="xs"
-                  value={sourceFilter}
-                />
-              </Group>
+              <Tabs.Panel value="pos" pt="md">
+                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                  <ResearchPanel
+                    dashboard={dashboard}
+                    working={working}
+                    onResearch={() => void runResearch(false)}
+                    onRefreshResearch={() => void runResearch(true)}
+                  />
+                  <PosBatchPanel
+                    suggestions={suggestions}
+                    tokenDrafts={tokenDrafts}
+                    working={working}
+                    onGenerate={() => void generatePosSuggestions()}
+                    onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
+                    onTokenChange={updateTokenDraft}
+                  />
+                </SimpleGrid>
+              </Tabs.Panel>
 
-              <ScrollArea type="auto">
-                <Table miw={860} highlightOnHover horizontalSpacing="lg" verticalSpacing="md">
-                  <Table.Thead>
-                    {table.getHeaderGroups().map(headerGroup => (
-                      <Table.Tr key={headerGroup.id}>
-                        {headerGroup.headers.map(header => (
-                          <Table.Th key={header.id} c="dimmed" fz="xs" fw={800} tt="uppercase">
-                            {header.isPlaceholder
-                              ? null
-                              : flexRender(header.column.columnDef.header, header.getContext())}
-                          </Table.Th>
-                        ))}
-                      </Table.Tr>
-                    ))}
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {visibleRows.length > 0 ? (
-                      visibleRows.map(row => (
-                        <Table.Tr key={row.id} bg="rgba(15, 23, 42, 0.36)">
-                          {row.getVisibleCells().map(cell => (
-                            <Table.Td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</Table.Td>
-                          ))}
-                        </Table.Tr>
-                      ))
-                    ) : (
-                      <Table.Tr>
-                        <Table.Td colSpan={columns.length}>
-                          <Text c="dimmed" py="xl" ta="center">
-                            No rows match this filter.
-                          </Text>
-                        </Table.Td>
-                      </Table.Tr>
-                    )}
-                  </Table.Tbody>
-                </Table>
-              </ScrollArea>
-            </Paper>
+              <Tabs.Panel value="uploads" pt="md">
+                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                  <PaperPanel title="Manual sentences" eyebrow="Text import">
+                    <Stack gap="sm">
+                      <Select
+                        data={[
+                          { value: "text", label: "Manual text" },
+                          { value: "csv", label: "CSV text" },
+                          { value: "txt", label: "TXT lines" },
+                        ]}
+                        label="Source type"
+                        value={manualSource}
+                        onChange={value => setManualSource((value as SourceType | null) ?? "text")}
+                      />
+                      <Textarea
+                        autosize
+                        minRows={8}
+                        label="Sentences"
+                        value={manualText}
+                        onChange={event => setManualText(event.currentTarget.value)}
+                      />
+                      <Button color="green" disabled={working || !manualText.trim()} onClick={() => void importManualText()}>
+                        Import Sentences
+                      </Button>
+                    </Stack>
+                  </PaperPanel>
+
+                  <PaperPanel title="Files and imports" eyebrow="CSV, TXT, PDF, image">
+                    <Stack gap="md">
+                      <Group align="end">
+                        <FileInput
+                          flex={1}
+                          label="Upload file"
+                          placeholder="Choose CSV, TXT, PDF, or image"
+                          value={uploadFile}
+                          onChange={setUploadFile}
+                        />
+                        <Button color="green" disabled={working || !uploadFile} onClick={() => void importFile()}>
+                          Upload
+                        </Button>
+                      </Group>
+                      <ImportsTable imports={dashboard?.imports ?? []} />
+                    </Stack>
+                  </PaperPanel>
+                </SimpleGrid>
+              </Tabs.Panel>
+
+              <Tabs.Panel value="ocr" pt="md">
+                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                  <PaperPanel title="OCR queue" eyebrow="PDF and image extraction">
+                    <Stack gap="sm">
+                      <Text c="dimmed" size="sm">
+                        Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
+                      </Text>
+                      <Button color="green" disabled={working || !latestAssetImport} onClick={() => void runOcr()}>
+                        Run OCR
+                      </Button>
+                    </Stack>
+                  </PaperPanel>
+                  <OcrReviewPanel
+                    suggestions={ocrSuggestions}
+                    drafts={ocrDrafts}
+                    working={working}
+                    onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
+                    onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
+                  />
+                </SimpleGrid>
+              </Tabs.Panel>
+
+              <Tabs.Panel value="model" pt="md">
+                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                  <PaperPanel title="Spanish to Nahuatl" eyebrow="Hugging Face T5 demo endpoint">
+                    <Stack gap="sm">
+                      <Textarea
+                        label="Spanish input"
+                        minRows={4}
+                        value={translateText}
+                        onChange={event => setTranslateText(event.currentTarget.value)}
+                      />
+                      <Button color="green" disabled={working || !translateText.trim()} onClick={() => void translateNahuatl()}>
+                        Translate
+                      </Button>
+                      {translation ? (
+                        <Card withBorder radius="md" p="md" style={{ background: UI.panelSoft, borderColor: UI.border }}>
+                          <Text fw={700}>{translation}</Text>
+                        </Card>
+                      ) : null}
+                    </Stack>
+                  </PaperPanel>
+
+                  <PaperPanel title="Dataset POS tagger" eyebrow="Training trigger">
+                    <Stack gap="sm">
+                      <Group gap="xs">
+                        <Badge color="green" radius="sm" variant="light">
+                          {acceptedPosCount} accepted examples
+                        </Badge>
+                        <Badge color={statusColor(dashboard?.pos_model.status ?? "")} radius="sm" variant="dot">
+                          {dashboard?.pos_model.status.replaceAll("_", " ") ?? "not started"}
+                        </Badge>
+                      </Group>
+                      <Text c="dimmed" size="sm">
+                        The demo trigger allows model creation before the production threshold is reached. Accepted
+                        reviewer examples remain the training signal.
+                      </Text>
+                      <Button color="green" disabled={working} onClick={() => void trainPosModel()}>
+                        Trigger POS Training
+                      </Button>
+                      {dashboard?.pos_model.model_name ? (
+                        <Text size="sm">Model: {dashboard.pos_model.model_name}</Text>
+                      ) : null}
+                    </Stack>
+                  </PaperPanel>
+                </SimpleGrid>
+              </Tabs.Panel>
+            </Tabs>
+
+            <JobsPanel jobs={jobs} />
           </Stack>
         </Box>
       </AppShell.Main>
     </AppShell>
+  );
+}
+
+function MetricCard({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <Card
+      withBorder
+      radius="md"
+      p="md"
+      style={{ background: UI.panel, borderColor: UI.border }}
+    >
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
+        <Box>
+          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+            {label}
+          </Text>
+          <Text fw={850} mt={4}>
+            {value}
+          </Text>
+        </Box>
+        <ThemeIcon color={tone} radius="md" variant="light">
+          {label.slice(0, 2)}
+        </ThemeIcon>
+      </Group>
+    </Card>
+  );
+}
+
+function PaperPanel({ title, eyebrow, children }: { title: string; eyebrow: string; children: React.ReactNode }) {
+  return (
+    <Paper
+      withBorder
+      radius="md"
+      p="lg"
+      style={{ background: UI.panel, borderColor: UI.border }}
+    >
+      <Stack gap="md">
+        <Box>
+          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+            {eyebrow}
+          </Text>
+          <Title order={3} size="h3">
+            {title}
+          </Title>
+        </Box>
+        {children}
+      </Stack>
+    </Paper>
+  );
+}
+
+function ResearchPanel({
+  dashboard,
+  working,
+  onResearch,
+  onRefreshResearch,
+}: {
+  dashboard: Dashboard | null;
+  working: boolean;
+  onResearch: () => void;
+  onRefreshResearch: () => void;
+}) {
+  const research = dashboard?.research;
+  return (
+    <PaperPanel title="Cached research notes" eyebrow="Dataset + language">
+      <Stack gap="sm">
+        <Group gap="xs">
+          <Button disabled={working} onClick={onResearch}>
+            {research ? "Use Cached Research" : "Run Research"}
+          </Button>
+          <Button color="green" disabled={working} onClick={onRefreshResearch} variant="light">
+            Refresh
+          </Button>
+        </Group>
+        {research ? (
+          <>
+            <Text size="sm">{research.summary}</Text>
+            <Stack gap={6}>
+              {research.guidelines.map(guideline => (
+                <Text key={guideline} c="dimmed" size="sm">
+                  {guideline}
+                </Text>
+              ))}
+            </Stack>
+            <Group gap="xs">
+              {research.sources.map(source => (
+                <Badge key={source.url} color="violet" radius="sm" variant="outline">
+                  {source.title}
+                </Badge>
+              ))}
+            </Group>
+          </>
+        ) : (
+          <Text c="dimmed" size="sm">
+            Research has not been generated for this workspace yet.
+          </Text>
+        )}
+      </Stack>
+    </PaperPanel>
+  );
+}
+
+function PosBatchPanel({
+  suggestions,
+  tokenDrafts,
+  working,
+  onGenerate,
+  onReview,
+  onTokenChange,
+}: {
+  suggestions: Suggestion[];
+  tokenDrafts: DraftMap;
+  working: boolean;
+  onGenerate: () => void;
+  onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
+  onTokenChange: (suggestionId: string, tokenIndex: number, tag: string | null) => void;
+}) {
+  return (
+    <PaperPanel title="Five-at-a-time review" eyebrow="UPOS suggestions">
+      <Stack gap="md">
+        <Group justify="space-between">
+          <Text c="dimmed" size="sm">
+            Pending batch size: {suggestions.length}
+          </Text>
+          <Button disabled={working} onClick={onGenerate}>
+            Generate 5 Suggestions
+          </Button>
+        </Group>
+        {suggestions.length === 0 ? (
+          <Text c="dimmed" size="sm">
+            No pending POS suggestions. Generate a batch after uploading text.
+          </Text>
+        ) : (
+          suggestions.map(suggestion => (
+            <Card
+              key={suggestion.id}
+              withBorder
+              radius="md"
+              p="md"
+              style={{ background: UI.panelSoft, borderColor: UI.border }}
+            >
+              <Stack gap="sm">
+                <Group justify="space-between" align="flex-start">
+                  <Box>
+                    <Text fw={750}>{suggestion.original_text}</Text>
+                    <Text c="dimmed" size="xs">
+                      Confidence {formatPercent(suggestion.confidence)}
+                    </Text>
+                  </Box>
+                  <Badge color={statusColor(suggestion.status)} radius="sm" variant="dot">
+                    {suggestion.status}
+                  </Badge>
+                </Group>
+                <Table miw={520} withTableBorder={false}>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Token</Table.Th>
+                      <Table.Th>UPOS</Table.Th>
+                      <Table.Th>Reason</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {(tokenDrafts[suggestion.id] ?? suggestion.tokens).map(token => (
+                      <Table.Tr key={`${suggestion.id}-${token.index}`}>
+                        <Table.Td>
+                          <Text fw={650} size="sm">
+                            {token.token}
+                          </Text>
+                        </Table.Td>
+                        <Table.Td>
+                          <Select
+                            data={UPOS_TAGS.map(tag => ({ value: tag, label: tag }))}
+                            size="xs"
+                            value={token.suggested_pos}
+                            onChange={value => onTokenChange(suggestion.id, token.index, value)}
+                          />
+                        </Table.Td>
+                        <Table.Td>
+                          <Text c="dimmed" size="xs">
+                            {token.rationale}
+                          </Text>
+                        </Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+                <Group gap="xs">
+                  <Button color="green" disabled={working} onClick={() => onReview(suggestion, "approved")} size="xs">
+                    Approve
+                  </Button>
+                  <Button
+                    color="violet"
+                    disabled={working}
+                    onClick={() => onReview(suggestion, "edited")}
+                    size="xs"
+                    variant="light"
+                  >
+                    Save Edit
+                  </Button>
+                  <Button color="red" disabled={working} onClick={() => onReview(suggestion, "denied")} size="xs" variant="light">
+                    Deny
+                  </Button>
+                </Group>
+              </Stack>
+            </Card>
+          ))
+        )}
+      </Stack>
+    </PaperPanel>
+  );
+}
+
+function ImportsTable({ imports }: { imports: ImportRecord[] }) {
+  if (imports.length === 0) {
+    return (
+      <Text c="dimmed" size="sm">
+        No imports yet.
+      </Text>
+    );
+  }
+  return (
+    <ScrollArea type="auto">
+      <Table miw={620} highlightOnHover>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Source</Table.Th>
+            <Table.Th>File</Table.Th>
+            <Table.Th>Items</Table.Th>
+            <Table.Th>Status</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {imports.map(item => (
+            <Table.Tr key={item.id}>
+              <Table.Td>
+                <Badge color={sourceColor(item.source_type)} radius="sm" variant="light">
+                  {item.source_type}
+                </Badge>
+              </Table.Td>
+              <Table.Td>{item.filename ?? "manual import"}</Table.Td>
+              <Table.Td>{item.item_count || item.asset_count}</Table.Td>
+              <Table.Td>
+                <Badge color={statusColor(item.status)} radius="sm" variant="dot">
+                  {item.status}
+                </Badge>
+              </Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </ScrollArea>
+  );
+}
+
+function OcrReviewPanel({
+  suggestions,
+  drafts,
+  working,
+  onDraftChange,
+  onReview,
+}: {
+  suggestions: Suggestion[];
+  drafts: TextDraftMap;
+  working: boolean;
+  onDraftChange: (id: string, value: string) => void;
+  onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
+}) {
+  return (
+    <PaperPanel title="OCR suggestions" eyebrow="Human validation">
+      <Stack gap="md">
+        {suggestions.length === 0 ? (
+          <Text c="dimmed" size="sm">
+            No pending OCR suggestions.
+          </Text>
+        ) : (
+          suggestions.map(suggestion => (
+            <Card
+              key={suggestion.id}
+              withBorder
+              radius="md"
+              p="md"
+              style={{ background: UI.panelSoft, borderColor: UI.border }}
+            >
+              <Stack gap="sm">
+                <Group justify="space-between">
+                  <Text fw={750}>{suggestion.original_text}</Text>
+                  <Badge color="grape" radius="sm" variant="light">
+                    {formatPercent(suggestion.confidence)}
+                  </Badge>
+                </Group>
+                <Textarea
+                  minRows={5}
+                  value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
+                  onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
+                />
+                <Text c="dimmed" size="xs">
+                  {suggestion.rationale}
+                </Text>
+                <Group gap="xs">
+                  <Button color="green" disabled={working} onClick={() => onReview(suggestion, "approved")} size="xs">
+                    Approve
+                  </Button>
+                  <Button
+                    color="violet"
+                    disabled={working}
+                    onClick={() => onReview(suggestion, "edited")}
+                    size="xs"
+                    variant="light"
+                  >
+                    Save Edit
+                  </Button>
+                  <Button color="red" disabled={working} onClick={() => onReview(suggestion, "denied")} size="xs" variant="light">
+                    Deny
+                  </Button>
+                </Group>
+              </Stack>
+            </Card>
+          ))
+        )}
+      </Stack>
+    </PaperPanel>
+  );
+}
+
+function JobsPanel({ jobs }: { jobs: Job[] }) {
+  if (jobs.length === 0) return null;
+  return (
+    <PaperPanel title="Recent jobs" eyebrow="Polling-compatible status">
+      <SimpleGrid cols={{ base: 1, md: 3 }} spacing="sm">
+        {jobs.map(job => (
+          <Card key={job.id} withBorder radius="md" p="sm" style={{ background: UI.panelSoft, borderColor: UI.border }}>
+            <Group justify="space-between" wrap="nowrap">
+              <Box>
+                <Text fw={700} size="sm">
+                  {job.type}
+                </Text>
+                <Text c="dimmed" size="xs">
+                  {job.message || job.id}
+                </Text>
+              </Box>
+              <Badge color={statusColor(job.status)} radius="sm" variant="dot">
+                {job.status}
+              </Badge>
+            </Group>
+          </Card>
+        ))}
+      </SimpleGrid>
+    </PaperPanel>
   );
 }
 
