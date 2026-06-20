@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     seed_demo_data: bool = True
+    database_url: str = "sqlite:///./langbase.db"
+    db_echo: bool = False
 
     browserbase_api_key: str | None = None
     browserbase_base_url: str = "https://api.browserbase.com"
