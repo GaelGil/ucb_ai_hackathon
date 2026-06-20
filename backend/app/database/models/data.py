@@ -1,11 +1,10 @@
-from __future__ import annotations
-
 import enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from sqlmodel import Field, Relationship, SQLModel
 
 if TYPE_CHECKING:
+    from app.database.models.dataset import Dataset
     from app.database.models.label import Label
     from app.database.models.language import Language
 
@@ -26,6 +25,10 @@ class Data(SQLModel, table=True):
     # Belongs to a language.
     language_id: int = Field(foreign_key="languages.id", index=True)
     language: "Language" = Relationship(back_populates="data")
+
+    # Optionally belongs to a dataset.
+    dataset_id: int | None = Field(default=None, foreign_key="datasets.id", index=True)
+    dataset: Optional["Dataset"] = Relationship(back_populates="data")
 
     # One data record has many labels.
     labels: list["Label"] = Relationship(

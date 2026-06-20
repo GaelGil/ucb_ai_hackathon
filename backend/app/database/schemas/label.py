@@ -1,18 +1,22 @@
 from pydantic import BaseModel, ConfigDict
 
+from app.database.models.label import LabelType
+
 
 class LabelCreate(BaseModel):
     name: str
-    type: str
+    type: LabelType
     value: str
     data_id: int
+    dataset_id: int | None = None
 
 
 class LabelUpdate(BaseModel):
     name: str | None = None
-    type: str | None = None
+    type: LabelType | None = None
     value: str | None = None
     data_id: int | None = None
+    dataset_id: int | None = None
 
 
 class LabelRead(BaseModel):
@@ -20,6 +24,7 @@ class LabelRead(BaseModel):
 
     id: int
     name: str
-    type: str
+    type: LabelType
     value: str
     data_id: int
+    dataset_id: int | None

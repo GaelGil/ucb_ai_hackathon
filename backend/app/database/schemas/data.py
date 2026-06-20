@@ -7,12 +7,14 @@ class DataCreate(BaseModel):
     name: str
     type: DataType
     language_id: int
+    dataset_id: int | None = None
 
 
 class DataUpdate(BaseModel):
     name: str | None = None
     type: DataType | None = None
     language_id: int | None = None
+    dataset_id: int | None = None
 
 
 class DataRead(BaseModel):
@@ -22,3 +24,4 @@ class DataRead(BaseModel):
     name: str
     type: DataType
     language_id: int
+    dataset_id: int | None
