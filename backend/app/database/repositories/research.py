@@ -16,7 +16,7 @@ class ResearchRepository:
     def get(self, research_id: int) -> Research | None:
         return self.session.get(Research, research_id)
 
-    def _list(self, offset: int = 0, limit: int = 100) -> list[Research]:
+    def list(self, offset: int = 0, limit: int = 100) -> list[Research]:
         statement = select(Research).offset(offset).limit(limit)
         return list(self.session.exec(statement).all())
 

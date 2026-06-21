@@ -20,7 +20,7 @@ class DatasetRepository:
         statement = select(Dataset).where(Dataset.language_id == language_id)
         return list(self.session.exec(statement).all())
 
-    def _list(self, offset: int = 0, limit: int = 100) -> list[Dataset]:
+    def list(self, offset: int = 0, limit: int = 100) -> list[Dataset]:
         statement = select(Dataset).offset(offset).limit(limit)
         return list(self.session.exec(statement).all())
 
