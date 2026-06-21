@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     seed_demo_data: bool = False
     database_url: str = Field(
-        description="SQLAlchemy database URL. Use Supabase Postgres in deployed environments."
+        default="sqlite:///./langbase.db",
+        description="SQLAlchemy database URL. Use Supabase Postgres in deployed environments.",
     )
     db_echo: bool = False
     create_db_on_startup: bool = False

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
-
+from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 from app.src.api.mappers import dataset_to_api, import_to_api, job_to_api, research_to_api, suggestion_status_to_api
@@ -50,25 +50,37 @@ class DatasetService:
         self.session.commit()
 
     def get_dashboard(self, dataset_id: str) -> Dashboard:
+        return self._with_operational_retry(lambda: self._get_dashboard(dataset_id))
+
+    def _get_dashboard(self, dataset_id: str) -> Dashboard:
         dataset = self._get_dataset(dataset_id)
         imports = self.session.exec(
             select(ImportRecord).where(ImportRecord.dataset_id == dataset.id).order_by(ImportRecord.created_at.desc())
         ).all()
-        data_rows = self.session.exec(select(DataRow).where(DataRow.dataset_id == dataset.id)).all()
+        item_count = self.session.exec(
+            select(func.count()).select_from(DataRow).where(DataRow.dataset_id == dataset.id)
+        ).one()
         research = self.session.exec(
             select(Research)
             .where(Research.language_id == dataset.language_id)
             .where(Research.type == ResearchType.pos)
             .order_by(Research.updated_at.desc())
         ).first()
-        suggestions = self.session.exec(select(AiSuggestion).where(AiSuggestion.dataset_id == dataset.id)).all()
-        counts = Counter(f"{item.label_type.value}:{suggestion_status_to_api(item.status).value}" for item in suggestions)
+        suggestion_counts = self.session.exec(
+            select(AiSuggestion.label_type, AiSuggestion.status, func.count())
+            .where(AiSuggestion.dataset_id == dataset.id)
+            .group_by(AiSuggestion.label_type, AiSuggestion.status)
+        ).all()
+        counts = {
+            f"{label_type.value}:{suggestion_status_to_api(status).value}": count
+            for label_type, status, count in suggestion_counts
+        }
         return Dashboard(
             dataset=dataset_to_api(dataset),
             imports=[import_to_api(record) for record in imports],
             research=research_to_api(dataset, dataset.language, research) if research else None,
-            suggestion_counts=dict(counts),
-            item_count=len(data_rows),
+            suggestion_counts=counts,
+            item_count=item_count,
             pos_model=self._get_pos_model(dataset.id),
         )
 
@@ -152,3 +164,10 @@ class DatasetService:
             accepted_sentence_count=accepted_count,
             minimum_examples_met=accepted_count >= 20,
         )
+
+    def _with_operational_retry(self, callback):
+        try:
+            return callback()
+        except OperationalError:
+            self.session.rollback()
+            return callback()

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from sqlmodel import Session
 
 from app.src.api.data.service import DataService
-from app.src.api.dependencies import get_data_service
+from app.src.api.dependencies import AppServices, get_data_service, get_services
+from app.src.jobs import JobRunner
 from app.src.models import ImportKind, ImportResponse, OcrRequest, SourceType
 from app.src.parsing import source_type_from_filename
 
@@ -13,10 +15,37 @@ from app.src.parsing import source_type_from_filename
 router = APIRouter()
 
 
+def _run_import_text_background(
+    services: AppServices,
+    import_id: str,
+    job_id: str,
+    text: str,
+    source_type: SourceType,
+    column_mapping: dict,
+    import_kind: ImportKind,
+) -> None:
+    with Session(services.db_engine) as session:
+        service = DataService(
+            session=session,
+            ocr_provider=services.ocr_provider,
+            jobs=JobRunner(session, services.tracer),
+            storage=services.storage,
+        )
+        service.complete_queued_import_text(
+            import_id=import_id,
+            job_id=job_id,
+            text=text,
+            source_type=source_type,
+            column_mapping=column_mapping,
+            import_kind=import_kind,
+        )
+
+
 @router.post("/datasets/{dataset_id}/imports", response_model=ImportResponse)
 async def create_import(
     dataset_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     service: DataService = Depends(get_data_service),
 ) -> ImportResponse:
     content_type = request.headers.get("content-type", "")
@@ -33,6 +62,12 @@ async def create_import(
             data = await file.read()
             filename = getattr(file, "filename", None)
             inferred_source = source_type or source_type_from_filename(filename)
+            if inferred_source == SourceType.CSV:
+                print(
+                    "[csv-upload] uploading csv "
+                    f"dataset_id={dataset_id} filename={filename or 'upload'} import_kind={import_kind.value}",
+                    flush=True,
+                )
             if inferred_source in {SourceType.PDF, SourceType.IMAGE}:
                 record, job = service.import_asset(
                     dataset_id,
@@ -43,6 +78,30 @@ async def create_import(
                 )
                 return ImportResponse(import_record=record, job=job)
             text = data.decode("utf-8", errors="ignore")
+            if inferred_source == SourceType.CSV:
+                print(
+                    "[csv-upload] uploaded csv "
+                    f"dataset_id={dataset_id} filename={filename or 'upload'} bytes={len(data)} chars={len(text)}",
+                    flush=True,
+                )
+                record, job = service.queue_import_text(
+                    dataset_id,
+                    source_type=inferred_source,
+                    filename=filename,
+                    column_mapping=column_mapping,
+                    import_kind=import_kind,
+                )
+                background_tasks.add_task(
+                    _run_import_text_background,
+                    get_services(request),
+                    record.id,
+                    job.id,
+                    text,
+                    inferred_source,
+                    column_mapping,
+                    import_kind,
+                )
+                return ImportResponse(import_record=record, job=job)
             record, job, items, labels = service.import_text(
                 dataset_id,
                 text=text,

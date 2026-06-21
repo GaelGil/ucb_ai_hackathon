@@ -46,7 +46,7 @@ uv run python -m compileall app main.py
 
 ## Environment
 
-Copy `.env.example` to `.env` or `.env.local` and set `DATABASE_URL` before starting the API. Supabase Storage credentials are required when uploading PDFs/images to cloud storage; without them tests can still exercise the metadata path.
+Copy `.env.example` to `.env` or `.env.local` and set `DATABASE_URL` before starting the API against Supabase. For local hackathon development, the backend falls back to `sqlite:///./langbase.db` if `DATABASE_URL` is not set. Supabase Storage credentials are required when uploading PDFs/images to cloud storage; without them tests can still exercise the metadata path.
 
 pydantic-settings loads `backend/.env` and then `backend/.env.local`; real environment variables override both.
 

@@ -12,13 +12,18 @@ from app.src.api.mappers import data_row_to_text_item, import_to_api, job_to_api
 from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Job, Label
 from app.src.database.models.data import DataSourceType
 from app.src.database.models.import_record import ImportStatus
+from app.src.database.models.job import JobStatus as DbJobStatus
 from app.src.database.models.label import LabelSource, LabelType
+from app.src.database.models.language import now_utc
 from app.src.database.models.suggestion import SuggestionStatus
 from app.src.jobs import JobRunner
 from app.src.parsing import parse_text_items
 from app.src.providers import OCRProvider
 from app.src.repositories import NotFoundError
 from app.src.storage import SupabaseStorage, storage_path_for_upload
+
+
+CSV_IMPORT_BATCH_SIZE = 5
 
 
 class DataService:
@@ -46,24 +51,14 @@ class DataService:
     ) -> tuple[api.ImportRecord, api.Job, list[api.TextItem], list[api.Label]]:
         dataset = self._get_dataset(dataset_id)
         db_source_type = source_type_to_db(source_type)
-        record_mapping = dict(column_mapping or {})
-        if import_kind != api.ImportKind.GENERIC:
-            record_mapping["import_kind"] = import_kind.value
-        record = ImportRecord(
-            dataset_id=dataset.id,
-            source_type=db_source_type,
-            status=ImportStatus.processing,
-            filename=filename,
-            column_mapping=record_mapping,
-        )
-        self.session.add(record)
-        self.session.commit()
-        self.session.refresh(record)
-        created_rows: list[DataRow] = []
-        created_labels: list[Label] = []
+        record = self._create_import_record(dataset, db_source_type, filename, column_mapping, import_kind)
+        created_items: list[api.TextItem] = []
+        created_label_items: list[api.Label] = []
 
         def callback(job: api.Job) -> dict:
             del job
+            created_rows: list[DataRow] = []
+            created_labels: list[Label] = []
             stats: dict[str, Any] = {"import_kind": import_kind.value, "skipped_count": 0}
             if import_kind != api.ImportKind.GENERIC and db_source_type != DataSourceType.csv:
                 raise ValueError(f"{import_kind.value} imports require CSV source_type.")
@@ -93,12 +88,10 @@ class DataService:
             record.label_count = len(created_labels)
             record.status = ImportStatus.ready
             self.session.add(record)
-            self.session.commit()
-            for row in created_rows:
-                self.session.refresh(row)
-            for label in created_labels:
-                self.session.refresh(label)
+            self._commit_without_expiring_created_objects()
             self.session.refresh(record)
+            created_items.extend(data_row_to_text_item(row) for row in created_rows)
+            created_label_items.extend(label_to_api(label) for label in created_labels)
             return {
                 "dataset_id": dataset.id,
                 "import_id": record.id,
@@ -109,14 +102,456 @@ class DataService:
 
         job = self.jobs.run("import", callback)
         if job.status == api.JobStatus.FAILED:
+            if db_source_type == DataSourceType.csv:
+                print(
+                    "[csv-upload] error "
+                    f"dataset_id={dataset.id} import_id={record.id} filename={filename or 'manual'} "
+                    f"import_kind={import_kind.value} error={job.error or 'unknown error'}",
+                    flush=True,
+                )
             record.status = ImportStatus.failed
             record.error = job.error
             self.session.add(record)
             self.session.commit()
             self.session.refresh(record)
-        return import_to_api(record), job, [data_row_to_text_item(row) for row in created_rows], [
-            label_to_api(label) for label in created_labels
-        ]
+        return import_to_api(record), job, created_items, created_label_items
+
+    def queue_import_text(
+        self,
+        dataset_id: str,
+        *,
+        source_type: api.SourceType,
+        filename: str | None = None,
+        column_mapping: dict[str, Any] | None = None,
+        import_kind: api.ImportKind = api.ImportKind.GENERIC,
+    ) -> tuple[api.ImportRecord, api.Job]:
+        dataset = self._get_dataset(dataset_id)
+        db_source_type = source_type_to_db(source_type)
+        if import_kind != api.ImportKind.GENERIC and db_source_type != DataSourceType.csv:
+            raise ValueError(f"{import_kind.value} imports require CSV source_type.")
+        record = self._create_import_record(dataset, db_source_type, filename, column_mapping, import_kind)
+        job = Job(
+            type="import",
+            status=DbJobStatus.running,
+            progress=5,
+            message="Started",
+            job_metadata={
+                "dataset_id": dataset.id,
+                "import_id": record.id,
+                "import_kind": import_kind.value,
+                "background": True,
+            },
+        )
+        self.session.add(job)
+        self.session.commit()
+        self.session.refresh(job)
+        return import_to_api(record), job_to_api(job)
+
+    def complete_queued_import_text(
+        self,
+        *,
+        import_id: str,
+        job_id: str,
+        text: str,
+        source_type: api.SourceType,
+        column_mapping: dict[str, Any] | None = None,
+        import_kind: api.ImportKind = api.ImportKind.GENERIC,
+    ) -> None:
+        record = self.session.get(ImportRecord, import_id)
+        if record is None:
+            self._finish_import_job(job_id, DbJobStatus.failed, "Failed", f"Import {import_id} was not found.")
+            return
+
+        db_source_type = source_type_to_db(source_type)
+        created_rows: list[DataRow] = []
+        created_labels: list[Label] = []
+        stats: dict[str, Any] = {"import_kind": import_kind.value, "skipped_count": 0}
+        try:
+            if import_kind != api.ImportKind.GENERIC and db_source_type != DataSourceType.csv:
+                raise ValueError(f"{import_kind.value} imports require CSV source_type.")
+            if db_source_type == DataSourceType.csv:
+                stats = self._complete_csv_import_in_batches(
+                    record=record,
+                    job_id=job_id,
+                    text=text,
+                    column_mapping=column_mapping or record.column_mapping,
+                    import_kind=import_kind,
+                    batch_size=CSV_IMPORT_BATCH_SIZE,
+                )
+                return
+            else:
+                values = parse_text_items(text, source_type)
+                for index, value in enumerate(values):
+                    row = DataRow(
+                        dataset_id=record.dataset_id,
+                        import_id=record.id,
+                        row_index=index,
+                        source_type=db_source_type,
+                        text_content=value,
+                    )
+                    self.session.add(row)
+                    created_rows.append(row)
+
+            record.row_count = len(created_rows)
+            record.label_count = len(created_labels)
+            record.status = ImportStatus.ready
+            record.error = None
+            record.updated_at = now_utc()
+            self.session.add(record)
+            self.session.commit()
+            self._finish_import_job(
+                job_id,
+                DbJobStatus.succeeded,
+                "Completed",
+                None,
+                {
+                    "dataset_id": record.dataset_id,
+                    "import_id": record.id,
+                    "item_count": len(created_rows),
+                    "label_count": len(created_labels),
+                    **stats,
+                },
+            )
+        except Exception as exc:
+            self.session.rollback()
+            error = str(exc)
+            record = self.session.get(ImportRecord, import_id)
+            if record is not None:
+                record.status = ImportStatus.failed
+                record.error = error
+                record.updated_at = now_utc()
+                self.session.add(record)
+            print(
+                "[csv-upload] error "
+                f"dataset_id={record.dataset_id if record else 'unknown'} import_id={import_id} "
+                f"filename={record.filename if record and record.filename else 'manual'} "
+                f"import_kind={import_kind.value} error={error}",
+                flush=True,
+            )
+            self._finish_import_job(job_id, DbJobStatus.failed, "Failed", error, stats)
+
+    def _complete_csv_import_in_batches(
+        self,
+        *,
+        record: ImportRecord,
+        job_id: str,
+        text: str,
+        column_mapping: dict[str, Any],
+        import_kind: api.ImportKind,
+        batch_size: int,
+    ) -> dict[str, Any]:
+        reader = csv.DictReader(StringIO(text))
+        headers = [header.strip() for header in reader.fieldnames or [] if header is not None]
+        raw_rows = [self._normalized_csv_row(row) for row in reader]
+        print(
+            "[csv-upload] handling rows now "
+            f"dataset_id={record.dataset_id} import_id={record.id} import_kind={import_kind.value} "
+            f"headers={headers} raw_rows={len(raw_rows)}",
+            flush=True,
+        )
+
+        rows = raw_rows
+        text_column: str | None = None
+        label_columns: list[tuple[LabelType, str, str]] = []
+        if import_kind == api.ImportKind.TRANSLATION:
+            self._require_csv_headers(headers, ["text", "translation", "source", "src", "target"], "Translation")
+        elif import_kind == api.ImportKind.POS:
+            self._require_csv_headers(headers, ["text", "tags"], "POS")
+        else:
+            rows = [row for row in raw_rows if any((value or "").strip() for value in row.values())]
+            if not rows:
+                return self._complete_plain_csv_import_in_batches(record, job_id, text, import_kind, batch_size)
+            text_column = self._text_column(headers, column_mapping)
+            label_columns = self._label_columns(headers, text_column, column_mapping)
+
+        job = self.session.get(Job, job_id)
+        total_rows = 0
+        total_labels = 0
+        skipped_count = 0
+        batch_rows: list[DataRow] = []
+        batch_labels: list[Label] = []
+
+        for index, csv_row in enumerate(rows):
+            row, labels = self._csv_objects_for_row(
+                record.dataset_id,
+                record.id,
+                index,
+                csv_row,
+                import_kind,
+                text_column,
+                label_columns,
+            )
+            if row is None:
+                skipped_count += 1
+                continue
+            self.session.add(row)
+            batch_rows.append(row)
+            total_rows += 1
+            for label in labels:
+                label.data_row = row
+                self.session.add(label)
+                batch_labels.append(label)
+                total_labels += 1
+            if len(batch_rows) >= batch_size:
+                self._commit_import_batch(record, job, total_rows, total_labels, skipped_count, len(raw_rows))
+                print(
+                    "[csv-upload] batch submitted "
+                    f"dataset_id={record.dataset_id} import_id={record.id} batch_rows={len(batch_rows)} "
+                    f"batch_labels={len(batch_labels)} total_rows={total_rows} total_labels={total_labels} "
+                    f"skipped={skipped_count}",
+                    flush=True,
+                )
+                batch_rows.clear()
+                batch_labels.clear()
+
+        record.status = ImportStatus.ready
+        self._commit_import_batch(record, job, total_rows, total_labels, skipped_count, len(raw_rows))
+        print(
+            "[csv-upload] rows submitted "
+            f"dataset_id={record.dataset_id} import_id={record.id} rows={total_rows} "
+            f"labels={total_labels} skipped={skipped_count}",
+            flush=True,
+        )
+        metadata = {
+            "dataset_id": record.dataset_id,
+            "import_id": record.id,
+            "import_kind": import_kind.value,
+            "item_count": total_rows,
+            "label_count": total_labels,
+            "created_count": total_rows,
+            "skipped_count": skipped_count,
+            "batch_size": batch_size,
+        }
+        self._finish_import_job(job_id, DbJobStatus.succeeded, "Completed", None, metadata)
+        return metadata
+
+    def _complete_plain_csv_import_in_batches(
+        self,
+        record: ImportRecord,
+        job_id: str,
+        text: str,
+        import_kind: api.ImportKind,
+        batch_size: int,
+    ) -> dict[str, Any]:
+        job = self.session.get(Job, job_id)
+        total_rows = 0
+        batch_rows: list[DataRow] = []
+        for index, row in enumerate(csv.reader(StringIO(text))):
+            first = next((cell.strip() for cell in row if cell.strip()), "")
+            if not first:
+                continue
+            data_row = DataRow(
+                dataset_id=record.dataset_id,
+                import_id=record.id,
+                row_index=index,
+                source_type=DataSourceType.csv,
+                text_content=first,
+            )
+            self.session.add(data_row)
+            batch_rows.append(data_row)
+            total_rows += 1
+            if len(batch_rows) >= batch_size:
+                self._commit_import_batch(record, job, total_rows, 0, 0, total_rows)
+                print(
+                    "[csv-upload] batch submitted "
+                    f"dataset_id={record.dataset_id} import_id={record.id} batch_rows={len(batch_rows)} "
+                    f"batch_labels=0 total_rows={total_rows} total_labels=0 skipped=0",
+                    flush=True,
+                )
+                batch_rows.clear()
+
+        record.status = ImportStatus.ready
+        self._commit_import_batch(record, job, total_rows, 0, 0, total_rows)
+        print(
+            "[csv-upload] rows submitted "
+            f"dataset_id={record.dataset_id} import_id={record.id} rows={total_rows} labels=0 skipped=0",
+            flush=True,
+        )
+        metadata = {
+            "dataset_id": record.dataset_id,
+            "import_id": record.id,
+            "import_kind": import_kind.value,
+            "item_count": total_rows,
+            "label_count": 0,
+            "created_count": total_rows,
+            "skipped_count": 0,
+            "batch_size": batch_size,
+        }
+        self._finish_import_job(job_id, DbJobStatus.succeeded, "Completed", None, metadata)
+        return metadata
+
+    def _commit_import_batch(
+        self,
+        record: ImportRecord,
+        job: Job | None,
+        total_rows: int,
+        total_labels: int,
+        skipped_count: int,
+        raw_row_count: int,
+    ) -> None:
+        record.row_count = total_rows
+        record.label_count = total_labels
+        record.updated_at = now_utc()
+        self.session.add(record)
+        if job is not None:
+            job.progress = min(95, 5 + int((total_rows + skipped_count) / max(raw_row_count, 1) * 90))
+            job.message = f"Imported {total_rows} rows"
+            job.job_metadata = {
+                **(job.job_metadata or {}),
+                "item_count": total_rows,
+                "label_count": total_labels,
+                "skipped_count": skipped_count,
+                "batch_size": CSV_IMPORT_BATCH_SIZE,
+            }
+            job.updated_at = now_utc()
+            self.session.add(job)
+        self._commit_without_expiring_created_objects()
+
+    def _csv_objects_for_row(
+        self,
+        dataset_id: str,
+        import_id: str,
+        row_index: int,
+        csv_row: dict[str, str],
+        import_kind: api.ImportKind,
+        text_column: str | None,
+        label_columns: list[tuple[LabelType, str, str]],
+    ) -> tuple[DataRow | None, list[Label]]:
+        if import_kind == api.ImportKind.TRANSLATION:
+            text_value = (csv_row.get("text") or "").strip()
+            translation = (csv_row.get("translation") or "").strip()
+            if not text_value or not translation:
+                return None, []
+            row = self._csv_data_row(dataset_id, import_id, row_index, text_value, csv_row)
+            return row, [
+                Label(
+                    dataset_id=dataset_id,
+                    data_row_id=row.id,
+                    import_id=import_id,
+                    type=LabelType.translation,
+                    name="translation",
+                    value={
+                        "text": translation,
+                        "source": (csv_row.get("source") or "").strip(),
+                        "src": (csv_row.get("src") or "").strip(),
+                        "target": (csv_row.get("target") or "").strip(),
+                    },
+                    source=LabelSource.csv_import,
+                    original_column_name="translation",
+                )
+            ]
+
+        if import_kind == api.ImportKind.POS:
+            text_value = (csv_row.get("text") or "").strip()
+            tags_value = self._normalized_pos_tags(csv_row.get("tags") or "")
+            tokens = text_value.split()
+            tags = tags_value.split()
+            if not text_value or not tags_value or len(tokens) != len(tags) or any(tag not in api.UPOS_TAGS for tag in tags):
+                return None, []
+            row = self._csv_data_row(dataset_id, import_id, row_index, text_value, csv_row)
+            return row, [
+                Label(
+                    dataset_id=dataset_id,
+                    data_row_id=row.id,
+                    import_id=import_id,
+                    type=LabelType.pos,
+                    name="tags",
+                    value={"tags": tags_value},
+                    source=LabelSource.csv_import,
+                    original_column_name="tags",
+                )
+            ]
+
+        text_value = (csv_row.get(text_column) or "").strip() if text_column else self._first_value(csv_row)
+        if not text_value:
+            return None, []
+        row = self._csv_data_row(dataset_id, import_id, row_index, text_value, csv_row)
+        labels: list[Label] = []
+        for label_type, name, column in label_columns:
+            raw_value = (csv_row.get(column) or "").strip()
+            if not raw_value:
+                continue
+            labels.append(
+                Label(
+                    dataset_id=dataset_id,
+                    data_row_id=row.id,
+                    import_id=import_id,
+                    type=label_type,
+                    name=name,
+                    value=self._label_value(raw_value, label_type),
+                    source=LabelSource.csv_import,
+                    original_column_name=column,
+                )
+            )
+        return row, labels
+
+    def _csv_data_row(
+        self,
+        dataset_id: str,
+        import_id: str,
+        row_index: int,
+        text_value: str,
+        csv_row: dict[str, str],
+    ) -> DataRow:
+        return DataRow(
+            dataset_id=dataset_id,
+            import_id=import_id,
+            row_index=row_index,
+            source_type=DataSourceType.csv,
+            text_content=text_value,
+            row_metadata={"csv": csv_row},
+        )
+
+    def _create_import_record(
+        self,
+        dataset: Dataset,
+        source_type: DataSourceType,
+        filename: str | None,
+        column_mapping: dict[str, Any] | None,
+        import_kind: api.ImportKind,
+    ) -> ImportRecord:
+        record_mapping = dict(column_mapping or {})
+        if import_kind != api.ImportKind.GENERIC:
+            record_mapping["import_kind"] = import_kind.value
+        record = ImportRecord(
+            dataset_id=dataset.id,
+            source_type=source_type,
+            status=ImportStatus.processing,
+            filename=filename,
+            column_mapping=record_mapping,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def _commit_without_expiring_created_objects(self) -> None:
+        expire_on_commit = self.session.expire_on_commit
+        self.session.expire_on_commit = False
+        try:
+            self.session.commit()
+        finally:
+            self.session.expire_on_commit = expire_on_commit
+
+    def _finish_import_job(
+        self,
+        job_id: str,
+        status: DbJobStatus,
+        message: str,
+        error: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        job = self.session.get(Job, job_id)
+        if job is None:
+            return
+        job.status = status
+        job.progress = 100
+        job.message = message
+        job.error = error
+        job.job_metadata = {**(job.job_metadata or {}), **(metadata or {})}
+        job.updated_at = now_utc()
+        self.session.add(job)
+        self.session.commit()
 
     def import_asset(
         self,
@@ -231,6 +666,12 @@ class DataService:
         reader = csv.DictReader(StringIO(text))
         headers = [header.strip() for header in reader.fieldnames or [] if header is not None]
         raw_rows = [self._normalized_csv_row(row) for row in reader]
+        print(
+            "[csv-upload] handling rows now "
+            f"dataset_id={dataset_id} import_id={import_id} import_kind={import_kind.value} "
+            f"headers={headers} raw_rows={len(raw_rows)}",
+            flush=True,
+        )
 
         if import_kind == api.ImportKind.TRANSLATION:
             return self._create_translation_csv_rows(dataset_id, import_id, headers, raw_rows)
@@ -240,6 +681,12 @@ class DataService:
         rows = [row for row in raw_rows if any((value or "").strip() for value in row.values())]
         if not rows:
             created_rows, created_labels = self._create_plain_csv_rows(dataset_id, import_id, text)
+            print(
+                "[csv-upload] rows submitted "
+                f"dataset_id={dataset_id} import_id={import_id} rows={len(created_rows)} "
+                f"labels={len(created_labels)} skipped=0",
+                flush=True,
+            )
             return created_rows, created_labels, {
                 "import_kind": import_kind.value,
                 "created_count": len(created_rows),
@@ -266,7 +713,6 @@ class DataService:
                 row_metadata={"csv": csv_row},
             )
             self.session.add(row)
-            self.session.flush()
             created_rows.append(row)
             for label_type, name, column in label_columns:
                 raw_value = (csv_row.get(column) or "").strip()
@@ -282,8 +728,15 @@ class DataService:
                     source=LabelSource.csv_import,
                     original_column_name=column,
                 )
+                label.data_row = row
                 self.session.add(label)
                 created_labels.append(label)
+        print(
+            "[csv-upload] rows submitted "
+            f"dataset_id={dataset_id} import_id={import_id} rows={len(created_rows)} "
+            f"labels={len(created_labels)} skipped={skipped_count}",
+            flush=True,
+        )
         return created_rows, created_labels, {
             "import_kind": import_kind.value,
             "created_count": len(created_rows),
@@ -318,7 +771,6 @@ class DataService:
                 row_metadata={"csv": csv_row},
             )
             self.session.add(row)
-            self.session.flush()
             created_rows.append(row)
             label = Label(
                 dataset_id=dataset_id,
@@ -335,8 +787,15 @@ class DataService:
                 source=LabelSource.csv_import,
                 original_column_name="translation",
             )
+            label.data_row = row
             self.session.add(label)
             created_labels.append(label)
+        print(
+            "[csv-upload] rows submitted "
+            f"dataset_id={dataset_id} import_id={import_id} rows={len(created_rows)} "
+            f"labels={len(created_labels)} skipped={skipped_count}",
+            flush=True,
+        )
         return created_rows, created_labels, {
             "import_kind": api.ImportKind.TRANSLATION.value,
             "created_count": len(created_rows),
@@ -373,7 +832,6 @@ class DataService:
                 row_metadata={"csv": csv_row},
             )
             self.session.add(row)
-            self.session.flush()
             created_rows.append(row)
             label = Label(
                 dataset_id=dataset_id,
@@ -385,8 +843,15 @@ class DataService:
                 source=LabelSource.csv_import,
                 original_column_name="tags",
             )
+            label.data_row = row
             self.session.add(label)
             created_labels.append(label)
+        print(
+            "[csv-upload] rows submitted "
+            f"dataset_id={dataset_id} import_id={import_id} rows={len(created_rows)} "
+            f"labels={len(created_labels)} skipped={skipped_count}",
+            flush=True,
+        )
         return created_rows, created_labels, {
             "import_kind": api.ImportKind.POS.value,
             "created_count": len(created_rows),

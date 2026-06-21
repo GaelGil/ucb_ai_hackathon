@@ -87,6 +87,18 @@ def test_research_is_separate_by_type(client: TestClient) -> None:
     assert translation["job"]["metadata"]["research_type"] == "translation"
 
 
+def test_missing_research_returns_null(client: TestClient) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "No research yet", "language_code": "none", "language_name": "None"},
+    ).json()
+
+    response = client.get(f"/datasets/{dataset['id']}/research", params={"type": "translation"})
+
+    assert response.status_code == 200
+    assert response.json() is None
+
+
 def test_pos_suggestions_require_pos_research(client: TestClient) -> None:
     dataset = client.post(
         "/datasets",
@@ -249,6 +261,38 @@ def test_translation_csv_import_uses_required_columns(client: TestClient) -> Non
         "src": "es",
         "target": "nah",
     }
+
+
+def test_multipart_translation_csv_import_runs_in_background(client: TestClient) -> None:
+    dataset = client.get("/datasets").json()[0]
+    csv_text = (
+        "text,translation,source,src,target,source_id_or_reference\n"
+        "hello world,tlasohkamati,axolotl,es,nah,1\n"
+        "second row,ome,axolotl,es,nah,2\n"
+    )
+
+    response = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        data={"import_kind": "translation"},
+        files={"file": ("sample.csv", csv_text, "text/csv")},
+    ).json()
+
+    assert response["job"]["status"] == "running"
+    assert response["job"]["metadata"]["background"] is True
+    assert response["import_record"]["status"] == "processing"
+
+    job = client.get(f"/jobs/{response['job']['id']}").json()["job"]
+    assert job["status"] == "succeeded"
+    assert job["metadata"]["item_count"] == 2
+    assert job["metadata"]["label_count"] == 2
+    assert job["metadata"]["batch_size"] == 5
+
+    dashboard = client.get(f"/datasets/{dataset['id']}/dashboard").json()
+    uploaded = next(item for item in dashboard["imports"] if item["id"] == response["import_record"]["id"])
+    assert dashboard["item_count"] >= 2
+    assert uploaded["status"] == "ready"
+    assert uploaded["item_count"] == 2
+    assert uploaded["label_count"] == 2
 
 
 def test_pos_csv_import_accepts_text_tags_and_json_list_tags(client: TestClient) -> None:
