@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import logging
 from typing import Iterator
 
 from app.src.config import Settings, get_settings
+
+
+logger = logging.getLogger("langbase.tracing")
 
 
 class Tracer:
@@ -21,6 +25,24 @@ class Tracer:
         self._configure_phoenix()
 
     def _configure_arize(self) -> None:
+        has_space_id = bool(self.settings.arize_space_id)
+        has_api_key = bool(self.settings.arize_api_key)
+        project_name = self.settings.arize_project_name or "langbase-hackathon"
+        print(
+            "[tracing] arize "
+            f"enabled=true project={project_name} "
+            f"space_id_configured={has_space_id} api_key_configured={has_api_key}",
+            flush=True,
+        )
+        if not has_space_id or not has_api_key:
+            self.enabled = False
+            self._tracer = None
+            print(
+                "[tracing] arize disabled: ARIZE_SPACE_ID and ARIZE_API_KEY are required when ARIZE_ENABLED=true",
+                flush=True,
+            )
+            return
+
         try:
             from opentelemetry import trace
             from arize.otel import register
@@ -29,15 +51,24 @@ class Tracer:
             provider = register(
                 space_id=self.settings.arize_space_id or "",
                 api_key=self.settings.arize_api_key or "",
-                project_name=self.settings.arize_project_name or "langbase-hackathon",
+                project_name=project_name,
             )
             AnthropicInstrumentor().instrument(tracer_provider=provider)
             self._tracer = trace.get_tracer("langbase")
-        except Exception:
+            print("[tracing] arize configured: exporter failures are non-blocking", flush=True)
+        except Exception as exc:
+            logger.exception("Failed to configure Arize tracing")
+            print(f"[tracing] arize disabled: setup_error={type(exc).__name__}", flush=True)
             self.enabled = False
             self._tracer = None
 
     def _configure_phoenix(self) -> None:
+        print(
+            "[tracing] phoenix "
+            f"enabled=true endpoint={self.settings.phoenix_otel_endpoint} "
+            f"project={self.settings.phoenix_project_name}",
+            flush=True,
+        )
         try:
             from opentelemetry import trace
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -64,7 +95,10 @@ class Tracer:
             )
             trace.set_tracer_provider(provider)
             self._tracer = trace.get_tracer("langbase")
-        except Exception:
+            print("[tracing] phoenix configured: exporter failures are non-blocking", flush=True)
+        except Exception as exc:
+            logger.exception("Failed to configure Phoenix tracing")
+            print(f"[tracing] phoenix disabled: setup_error={type(exc).__name__}", flush=True)
             self.enabled = False
             self._tracer = None
 

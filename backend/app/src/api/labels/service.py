@@ -208,13 +208,36 @@ class LabelsService:
         self._get_dataset(dataset_id)
         filters = [Label.dataset_id == dataset_id]
         if label_type is not None:
-            filters.append(Label.type == suggestion_type_to_db(label_type))
+            db_label_type = suggestion_type_to_db(label_type)
+            filters.append(Label.type == db_label_type)
+        else:
+            db_label_type = None
         if source is not None:
             filters.append(Label.source == LabelSource(source.value))
         total = self.session.exec(select(func.count()).select_from(Label).where(*filters)).one()
-        statement = select(Label).where(*filters).order_by(Label.created_at, Label.id).offset(offset).limit(limit)
         from app.src.api.mappers import label_to_api
 
+        if db_label_type == LabelType.translation:
+            records = self.session.exec(
+                select(Label, DataRow.row_index)
+                .join(DataRow, Label.data_row_id == DataRow.id)
+                .where(*filters)
+                .order_by(Label.created_at, Label.id)
+            ).all()
+            interleave_size = max(limit, 1)
+            ordered = sorted(
+                records,
+                key=lambda item: (
+                    (item[1] or 0) % interleave_size,
+                    item[1] or 0,
+                    item[0].created_at,
+                    item[0].id,
+                ),
+            )
+            labels = [label_to_api(label) for label, _ in ordered[offset : offset + limit]]
+            return labels, total
+
+        statement = select(Label).where(*filters).order_by(Label.created_at, Label.id).offset(offset).limit(limit)
         labels = [label_to_api(label) for label in self.session.exec(statement).all()]
         return labels, total
 
@@ -493,6 +516,16 @@ class LabelsService:
 
     def _upsert_label_for_suggestion(self, suggestion: AiSuggestion) -> None:
         label = self.session.exec(select(Label).where(Label.ai_suggestion_id == suggestion.id)).first()
+        if label is None and suggestion.label_type == LabelType.translation:
+            label = self.session.exec(
+                select(Label)
+                .where(Label.dataset_id == suggestion.dataset_id)
+                .where(Label.data_row_id == suggestion.data_row_id)
+                .where(Label.type == LabelType.translation)
+                .where(Label.ai_suggestion_id.is_(None))
+            ).first()
+            if label is not None and not self._is_incomplete_translation_label(label):
+                label = None
         if label is None:
             label = Label(
                 dataset_id=suggestion.dataset_id,
@@ -500,6 +533,7 @@ class LabelsService:
                 ai_suggestion_id=suggestion.id,
                 type=suggestion.label_type,
             )
+        label.ai_suggestion_id = suggestion.id
         label.value = suggestion.human_value if suggestion.status == DbSuggestionStatus.updated else suggestion.original_value
         label.source = (
             LabelSource.ai_updated if suggestion.status == DbSuggestionStatus.updated else LabelSource.ai_accepted
@@ -530,12 +564,12 @@ class LabelsService:
                 .where(AiSuggestion.status != DbSuggestionStatus.denied)
             ).all()
         }
-        existing_label_row_ids = {
-            label.data_row_id
-            for label in self.session.exec(
-                select(Label).where(Label.dataset_id == dataset_id).where(Label.type == label_type)
-            ).all()
-        }
+        existing_label_row_ids = set()
+        for label in self.session.exec(
+            select(Label).where(Label.dataset_id == dataset_id).where(Label.type == label_type)
+        ).all():
+            if not self._is_incomplete_translation_label(label):
+                existing_label_row_ids.add(label.data_row_id)
         excluded_row_ids = existing_suggestion_row_ids | existing_label_row_ids
         return [
             row
@@ -547,6 +581,13 @@ class LabelsService:
             ).all()
             if row.id not in excluded_row_ids and row.text_content
         ][:limit]
+
+    @staticmethod
+    def _is_incomplete_translation_label(label: Label) -> bool:
+        if label.type != LabelType.translation:
+            return False
+        value = label.value or {}
+        return not str(value.get("text") or "").strip()
 
     def _count_trainable_pos_labels(self, dataset_id: str) -> int:
         return self.session.exec(

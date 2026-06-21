@@ -33,14 +33,29 @@ class ResearchService:
     ) -> tuple[ResearchArtifact, Job]:
         dataset = self._get_dataset(dataset_id)
         existing = self._get_research_row(dataset.language_id, research_type)
+        print(
+            "[research-debug] ensure research "
+            f"dataset_id={dataset.id} language={dataset.language.code} type={research_type.value} "
+            f"force={force} cached={existing is not None}",
+            flush=True,
+        )
         if existing is not None and not force:
+            print(
+                "[research-debug] using cached research; agent will not be called "
+                f"dataset_id={dataset.id} research_id={existing.id} type={research_type.value}",
+                flush=True,
+            )
             api_research, job = self._cached_research_response(dataset, existing, research_type)
             return api_research, job
 
         research_holder: dict[str, Research] = {}
 
         def callback(job: Job) -> dict:
-            del job
+            print(
+                "[research-debug] synchronous research job callback "
+                f"job_id={job.id} dataset_id={dataset.id} type={research_type.value}",
+                flush=True,
+            )
             row, metadata = self._generate_research_row(dataset, existing, research_type)
             research_holder["row"] = row
             return metadata
@@ -59,7 +74,18 @@ class ResearchService:
     ) -> tuple[ResearchArtifact | None, Job]:
         dataset = self._get_dataset(dataset_id)
         existing = self._get_research_row(dataset.language_id, research_type)
+        print(
+            "[research-debug] queue research "
+            f"dataset_id={dataset.id} language={dataset.language.code} type={research_type.value} "
+            f"force={force} cached={existing is not None}",
+            flush=True,
+        )
         if existing is not None and not force:
+            print(
+                "[research-debug] using cached research; no background agent task needed "
+                f"dataset_id={dataset.id} research_id={existing.id} type={research_type.value}",
+                flush=True,
+            )
             return self._cached_research_response(dataset, existing, research_type)
         job = self.jobs.create_running(
             "research",
@@ -84,7 +110,18 @@ class ResearchService:
     ) -> Job:
         dataset = self._get_dataset(dataset_id)
         existing = self._get_research_row(dataset.language_id, research_type)
+        print(
+            "[research-debug] complete queued research "
+            f"job_id={job_id} dataset_id={dataset.id} language={dataset.language.code} "
+            f"type={research_type.value} force={force} cached={existing is not None}",
+            flush=True,
+        )
         if existing is not None and not force:
+            print(
+                "[research-debug] queued job found cached research; agent will not be called "
+                f"job_id={job_id} research_id={existing.id} type={research_type.value}",
+                flush=True,
+            )
             return self.jobs.create_succeeded(
                 "research",
                 metadata={
@@ -97,7 +134,11 @@ class ResearchService:
             )
 
         def callback(job: Job) -> dict:
-            del job
+            print(
+                "[research-debug] background research job callback "
+                f"job_id={job.id} dataset_id={dataset.id} type={research_type.value}",
+                flush=True,
+            )
             _, metadata = self._generate_research_row(dataset, existing, research_type)
             return metadata
 
@@ -106,6 +147,12 @@ class ResearchService:
     def get_research(self, dataset_id: str, research_type: ResearchType = ResearchType.pos) -> ResearchArtifact | None:
         dataset = self._get_dataset(dataset_id)
         row = self._get_research_row(dataset.language_id, research_type)
+        print(
+            "[research-debug] get research "
+            f"dataset_id={dataset.id} language={dataset.language.code} type={research_type.value} "
+            f"found={row is not None}",
+            flush=True,
+        )
         return research_to_api(dataset, dataset.language, row) if row else None
 
     def _cached_research_response(
@@ -130,6 +177,11 @@ class ResearchService:
     def _generate_research_row(
         self, dataset: Dataset, existing: Research | None, research_type: ResearchType
     ) -> tuple[Research, dict]:
+        print(
+            "[research-debug] generating research row "
+            f"dataset_id={dataset.id} language={dataset.language.code} type={research_type.value}",
+            flush=True,
+        )
         samples = [
             row.text_content
             for row in self.session.exec(
@@ -137,14 +189,37 @@ class ResearchService:
             ).all()
             if row.text_content
         ]
+        print(
+            "[research-debug] collected research samples "
+            f"dataset_id={dataset.id} type={research_type.value} sample_count={len(samples)}",
+            flush=True,
+        )
         with self.tracer.span(
             "research.create",
             dataset_id=dataset.id,
             language=dataset.language.code,
             research_type=research_type.value,
         ):
+            print(
+                "[research-debug] calling research agent "
+                f"dataset_id={dataset.id} language={dataset.language.code} type={research_type.value} "
+                f"provider={getattr(self.research_provider, 'provider', 'unknown')}",
+                flush=True,
+            )
             artifact = self.research_provider.create_research(dataset_to_api(dataset), samples, research_type.value)
+        print(
+            "[research-debug] research agent returned "
+            f"dataset_id={dataset.id} type={research_type.value} "
+            f"summary_chars={len(artifact.summary or '')} source_count={len(artifact.sources)} "
+            f"warning_count={len(artifact.warnings)}",
+            flush=True,
+        )
         evaluation = self._evaluate_research(dataset, samples, artifact, research_type)
+        print(
+            "[research-debug] research evaluation complete "
+            f"dataset_id={dataset.id} type={research_type.value} has_evaluation={bool(evaluation)}",
+            flush=True,
+        )
         if evaluation:
             artifact.metadata["evaluation"] = evaluation
             self.tracer.record_evaluation(
@@ -169,6 +244,12 @@ class ResearchService:
         self.session.add(row)
         self.session.commit()
         self.session.refresh(row)
+        print(
+            "[research-debug] research saved "
+            f"dataset_id={dataset.id} research_id={row.id} type={research_type.value} "
+            f"source_count={len(row.sources)}",
+            flush=True,
+        )
         return row, {
             "dataset_id": dataset.id,
             "research_id": row.id,
@@ -191,10 +272,25 @@ class ResearchService:
     ) -> dict:
         evaluator = getattr(self.research_provider, "evaluate_research", None)
         if evaluator is None:
+            print(
+                "[research-debug] no research evaluator configured "
+                f"dataset_id={dataset.id} type={research_type.value}",
+                flush=True,
+            )
             return artifact.metadata.get("evaluation") if isinstance(artifact.metadata.get("evaluation"), dict) else {}
         try:
+            print(
+                "[research-debug] calling research evaluator "
+                f"dataset_id={dataset.id} type={research_type.value}",
+                flush=True,
+            )
             return evaluator(dataset_to_api(dataset), samples, artifact, research_type.value)
         except Exception as exc:
+            print(
+                "[research-debug] research evaluator error "
+                f"dataset_id={dataset.id} type={research_type.value} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
             return {"name": f"{research_type.value}_research_quality", "kind": "llm", "label": "error", "feedback": str(exc)}
 
     def _get_dataset(self, dataset_id: str) -> Dataset:

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 import { EMPTY_DATASETS, EMPTY_LABELS, EMPTY_SUGGESTIONS, PAGE_SIZE } from "@/lib/constants";
@@ -23,7 +23,12 @@ export function useDatasets() {
 }
 
 function pageMeta(data: PaginationMeta | undefined, pageIndex: number): PaginationMeta {
-  return data ?? { total: 0, limit: PAGE_SIZE, offset: pageIndex * PAGE_SIZE };
+  const limit = data?.limit || PAGE_SIZE;
+  return {
+    total: data?.total ?? 0,
+    limit,
+    offset: pageIndex * limit,
+  };
 }
 
 export function useWorkspaceData(
@@ -51,6 +56,7 @@ export function useWorkspaceData(
         { signal },
       ),
     enabled: enabled && activeTab === "pos",
+    placeholderData: keepPreviousData,
   });
   const ocrSuggestionsQuery = useQuery({
     queryKey: queryKeys.suggestions(datasetId, "ocr", "pending", PAGE_SIZE, ocrOffset),
@@ -60,6 +66,7 @@ export function useWorkspaceData(
         { signal },
       ),
     enabled: enabled && activeTab === "ocr",
+    placeholderData: keepPreviousData,
   });
   const translationSuggestionsQuery = useQuery({
     queryKey: queryKeys.suggestions(datasetId, "translation", "pending", PAGE_SIZE, translationSuggestionOffset),
@@ -69,6 +76,7 @@ export function useWorkspaceData(
         { signal },
       ),
     enabled: enabled && activeTab === "translate",
+    placeholderData: keepPreviousData,
   });
   const translationLabelsQuery = useQuery({
     queryKey: queryKeys.labels(datasetId, "translation", PAGE_SIZE, translationLabelOffset),
@@ -78,6 +86,7 @@ export function useWorkspaceData(
         { signal },
       ),
     enabled: enabled && activeTab === "translate",
+    placeholderData: keepPreviousData,
   });
   const posResearchQuery = useQuery({
     queryKey: queryKeys.research(datasetId, "pos"),

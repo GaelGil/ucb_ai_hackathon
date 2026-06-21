@@ -21,6 +21,11 @@ def _run_research_background(
     force: bool,
     research_type: ResearchType,
 ) -> None:
+    print(
+        "[research-debug] background task started "
+        f"job_id={job_id} dataset_id={dataset_id} type={research_type.value} force={force}",
+        flush=True,
+    )
     with Session(services.db_engine) as session:
         service = ResearchService(
             session=session,
@@ -28,12 +33,26 @@ def _run_research_background(
             jobs=JobRunner(session, services.tracer),
             tracer=services.tracer,
         )
-        service.complete_queued_research(
-            job_id=job_id,
-            dataset_id=dataset_id,
-            force=force,
-            research_type=research_type,
-        )
+        try:
+            completed_job = service.complete_queued_research(
+                job_id=job_id,
+                dataset_id=dataset_id,
+                force=force,
+                research_type=research_type,
+            )
+            print(
+                "[research-debug] background task completed "
+                f"job_id={job_id} dataset_id={dataset_id} type={research_type.value} "
+                f"job_status={completed_job.status.value} error={completed_job.error}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "[research-debug] background task error "
+                f"job_id={job_id} dataset_id={dataset_id} type={research_type.value} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            raise
 
 
 @router.post("/datasets/{dataset_id}/research", response_model=ResearchResponse)
@@ -45,13 +64,33 @@ def create_research(
     force: bool = Query(default=False),
     research_type: ResearchType = Query(default=ResearchType.pos, alias="type"),
 ) -> ResearchResponse:
+    print(
+        "[research-debug] research endpoint reached "
+        f"method=POST dataset_id={dataset_id} type={research_type.value} force={force}",
+        flush=True,
+    )
     services = get_services(request)
     if not services.settings.agent_jobs_background:
+        print(
+            "[research-debug] running research synchronously "
+            f"dataset_id={dataset_id} type={research_type.value}",
+            flush=True,
+        )
         research, job = service.ensure_research(dataset_id, force=force, research_type=research_type)
         return ResearchResponse(research=research, job=job)
 
     research, job = service.queue_research(dataset_id, force=force, research_type=research_type)
+    print(
+        "[research-debug] research queued "
+        f"dataset_id={dataset_id} type={research_type.value} job_id={job.id} status={job.status.value}",
+        flush=True,
+    )
     if job.status.value == "running":
+        print(
+            "[research-debug] adding background task "
+            f"job_id={job.id} dataset_id={dataset_id} type={research_type.value}",
+            flush=True,
+        )
         background_tasks.add_task(
             _run_research_background,
             services,
@@ -69,4 +108,9 @@ def get_research(
     service: ResearchService = Depends(get_research_service),
     research_type: ResearchType = Query(default=ResearchType.pos, alias="type"),
 ) -> ResearchArtifact | None:
+    print(
+        "[research-debug] research endpoint reached "
+        f"method=GET dataset_id={dataset_id} type={research_type.value}",
+        flush=True,
+    )
     return service.get_research(dataset_id, research_type=research_type)

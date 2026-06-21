@@ -48,6 +48,11 @@ class AnthropicClient:
         prompt: str,
         max_tokens: int | None = None,
     ) -> JsonCompletion:
+        print(
+            "[research-debug] anthropic request starting "
+            f"task={task_name} model={self.model} prompt_chars={len(prompt)}",
+            flush=True,
+        )
         payload = self._message_payload(
             system=system,
             content=[{"type": "text", "text": prompt}],
@@ -55,7 +60,20 @@ class AnthropicClient:
         )
         with self.tracer.span("anthropic.request", task=task_name, model=self.model):
             response = self._post_message(payload, task_name)
-        return JsonCompletion(data=self._parse_json(self._response_text(response), task_name), usage=self._usage(response))
+        text = self._response_text(response)
+        usage = self._usage(response)
+        print(
+            "[research-debug] anthropic response received "
+            f"task={task_name} response_chars={len(text)} usage={usage}",
+            flush=True,
+        )
+        parsed = self._parse_json(text, task_name)
+        print(
+            "[research-debug] anthropic json parsed "
+            f"task={task_name} keys={sorted(parsed.keys())}",
+            flush=True,
+        )
+        return JsonCompletion(data=parsed, usage=usage)
 
     def complete_vision_json(
         self,
@@ -138,6 +156,11 @@ class AnthropicClient:
         try:
             return self._anthropic_client().messages.create(**payload)
         except Exception as exc:
+            print(
+                "[research-debug] anthropic request error "
+                f"task={task_name} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
             raise RuntimeError(f"Anthropic {task_name} failed: {exc}") from exc
 
     def _anthropic_client(self):
@@ -225,15 +248,41 @@ class BrowserbaseResearchProvider:
         self.model_name = self.llm.model
 
     def create_research(self, dataset: Dataset, samples: list[str], research_type: str = "pos") -> ResearchArtifact:
+        print(
+            "[research-debug] BrowserbaseResearchProvider.create_research reached "
+            f"dataset_id={dataset.id} language={dataset.language_code} type={research_type} sample_count={len(samples)}",
+            flush=True,
+        )
         if not self.api_key:
+            print("[research-debug] browserbase api key missing", flush=True)
             raise RuntimeError("BROWSERBASE_API_KEY is not configured.")
 
         query = self._research_query(dataset, research_type)
+        print(
+            "[research-debug] research query built "
+            f"dataset_id={dataset.id} type={research_type} query={query!r}",
+            flush=True,
+        )
         sources = self._search_and_fetch(query)
+        print(
+            "[research-debug] browserbase search/fetch complete "
+            f"dataset_id={dataset.id} type={research_type} source_count={len(sources)}",
+            flush=True,
+        )
         if not sources:
+            print(
+                "[research-debug] browserbase returned no usable sources "
+                f"dataset_id={dataset.id} type={research_type}",
+                flush=True,
+            )
             raise RuntimeError("Browserbase returned no usable sources.")
 
         prompt = self._research_prompt(dataset, samples, sources, research_type)
+        print(
+            "[research-debug] calling anthropic for research summary "
+            f"dataset_id={dataset.id} type={research_type} prompt_chars={len(prompt)} source_count={len(sources)}",
+            flush=True,
+        )
         completion = self.llm.complete_json(
             task_name=f"{research_type}_research",
             system="You are a careful low-resource language research assistant. Return only valid JSON.",
@@ -242,9 +291,20 @@ class BrowserbaseResearchProvider:
         data = completion.data
         summary = str(data.get("summary") or "").strip()
         if not summary:
+            print(
+                "[research-debug] anthropic research response missing summary "
+                f"dataset_id={dataset.id} type={research_type} keys={sorted(data.keys())}",
+                flush=True,
+            )
             raise RuntimeError("Anthropic research response did not include a summary.")
 
         guidelines = self._string_list(data.get("guidelines")) or self._guidelines(research_type)
+        print(
+            "[research-debug] research artifact built "
+            f"dataset_id={dataset.id} type={research_type} summary_chars={len(summary)} "
+            f"guideline_count={len(guidelines)}",
+            flush=True,
+        )
         metadata = {
             "provider": self.provider,
             "llm_provider": self.llm.provider,
@@ -273,6 +333,11 @@ class BrowserbaseResearchProvider:
         artifact: ResearchArtifact,
         research_type: str,
     ) -> dict[str, Any]:
+        print(
+            "[research-debug] calling anthropic research evaluator "
+            f"dataset_id={dataset.id} type={research_type} source_count={len(artifact.sources)}",
+            flush=True,
+        )
         return self.llm.evaluate(
             task_name=f"{research_type}_research_quality",
             rubric=(
@@ -297,24 +362,49 @@ class BrowserbaseResearchProvider:
         headers = {"x-bb-api-key": self.api_key or "", "Content-Type": "application/json"}
         with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
             with self.tracer.span("browserbase.search", query=query, num_results=6):
+                print(
+                    "[research-debug] executing browserbase search tool "
+                    f"url={self.base_url}/v1/search query={query!r}",
+                    flush=True,
+                )
                 search_response = client.post(
                     f"{self.base_url}/v1/search",
                     headers=headers,
                     json={"query": query, "numResults": 6},
                 )
                 search_response.raise_for_status()
+                print(
+                    "[research-debug] browserbase search tool response "
+                    f"status={search_response.status_code} bytes={len(search_response.content)}",
+                    flush=True,
+                )
             results = self._extract_search_results(search_response.json())
+            print(
+                "[research-debug] browserbase search results parsed "
+                f"result_count={len(results)}",
+                flush=True,
+            )
 
             sources: list[ResearchSource] = []
             for result in results[:4]:
                 try:
                     with self.tracer.span("browserbase.fetch", url=result["url"]):
+                        print(
+                            "[research-debug] executing browserbase fetch tool "
+                            f"url={result['url']}",
+                            flush=True,
+                        )
                         fetched = client.post(
                             f"{self.base_url}/v1/fetch",
                             headers=headers,
                             json={"url": result["url"], "format": "markdown", "allowRedirects": True},
                         )
                         fetched.raise_for_status()
+                        print(
+                            "[research-debug] browserbase fetch tool response "
+                            f"url={result['url']} status={fetched.status_code} bytes={len(fetched.content)}",
+                            flush=True,
+                        )
                     payload = fetched.json()
                     content = str(payload.get("content") or "").strip()
                     if content:
@@ -325,7 +415,23 @@ class BrowserbaseResearchProvider:
                                 excerpt=self._compact(content, 1400),
                             )
                         )
-                except Exception:
+                        print(
+                            "[research-debug] browserbase source accepted "
+                            f"url={result['url']} content_chars={len(content)}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "[research-debug] browserbase source skipped empty content "
+                            f"url={result['url']}",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(
+                        "[research-debug] browserbase fetch tool error "
+                        f"url={result.get('url')} error={type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
                     continue
         return sources
 
