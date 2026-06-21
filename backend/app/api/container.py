@@ -6,11 +6,11 @@ from flask import current_app, g
 from sqlmodel import Session
 from sqlalchemy import Engine
 
-from app.routes.data.service import DataService
-from app.routes.dataset.service import DatasetService
-from app.routes.labels.service import LabelsService
-from app.routes.language.service import LanguageService
-from app.routes.research.service import ResearchService
+from app.api.data.service import DataService
+from app.api.dataset.service import DatasetService
+from app.api.labels.service import LabelsService
+from app.api.language.service import LanguageService
+from app.api.research.service import ResearchService
 from app.config import Settings
 from app.utils.job_runner import JobRunner
 from app.clients.browserbase import BrowserbaseResearchProvider

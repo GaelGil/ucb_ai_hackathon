@@ -1,6 +1,6 @@
 from sqlmodel import select
 
-from app.routes.labels.service import LabelsService
+from app.api.labels.service import LabelsService
 from app.schemas import SuggestionReview, SuggestionStatus as ApiSuggestionStatus
 from app.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
 from app.database.models.data_row import DataSourceType

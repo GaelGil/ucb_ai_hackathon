@@ -8,7 +8,7 @@ from app.utils.mappers import (
     suggestion_status_to_db,
     suggestion_type_to_db,
 )
-from app.routes.research.service import ResearchService
+from app.api.research.service import ResearchService
 from app.database.models import AiSuggestion, DataRow, Dataset, Job, Label
 from app.database.models.job import JobStatus as DbJobStatus
 from app.database.models.label import LabelSource, LabelType

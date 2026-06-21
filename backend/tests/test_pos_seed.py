@@ -1,6 +1,6 @@
 from sqlmodel import select
 
-from app.routes.labels.service import LabelsService
+from app.api.labels.service import LabelsService
 from app.database.models import DataRow, Dataset, ImportRecord, Label, Language
 from app.database.models.data_row import DataSourceType
 from app.database.models.label import LabelSource, LabelType

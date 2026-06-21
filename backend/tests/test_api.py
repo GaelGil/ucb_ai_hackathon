@@ -6,7 +6,7 @@ from sqlmodel import create_engine
 from sqlmodel.pool import StaticPool
 
 from app import create_app
-from app.routes.container import SERVICES_CONFIG_KEY
+from app.api.container import SERVICES_CONFIG_KEY
 from app.config import Settings
 from app.schemas import ResearchArtifact, ResearchSource, TokenSuggestion, TranslationProviderResult
 
