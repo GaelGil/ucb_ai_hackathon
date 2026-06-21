@@ -78,8 +78,9 @@ const SIDEBAR_WIDTH = 304;
 const SIDEBAR_COLLAPSED_WIDTH = 84;
 
 type SourceType = "text" | "csv" | "txt" | "pdf" | "image";
-type SuggestionType = "pos" | "ocr";
-type SuggestionStatus = "pending" | "approved" | "denied" | "edited";
+type SuggestionType = "pos" | "ocr" | "translation" | "emotion" | "intention" | "text" | "custom";
+type SuggestionStatus = "pending" | "accepted" | "denied" | "updated" | "approved" | "edited";
+type LabelSource = "csv_import" | "human" | "ai_accepted" | "ai_updated";
 
 type Dataset = {
   id: string;
@@ -125,6 +126,21 @@ type Suggestion = {
   rationale: string;
 };
 
+type Label = {
+  id: string;
+  dataset_id: string;
+  data_row_id: string;
+  data_text: string | null;
+  import_id: string | null;
+  ai_suggestion_id: string | null;
+  type: SuggestionType;
+  name: string | null;
+  value: Record<string, unknown>;
+  source: LabelSource;
+  original_column_name: string | null;
+  created_at: string;
+};
+
 type PosModel = {
   status: string;
   accepted_sentence_count: number;
@@ -160,34 +176,6 @@ type DraftMap = Record<string, TokenSuggestion[]>;
 type TextDraftMap = Record<string, string>;
 type WorkspaceTab = "pos" | "ocr" | "translate" | "upload" | "models";
 
-type TranslationRow = {
-  id: string;
-  text: string;
-  translation: string;
-  suggestions: string[];
-};
-
-const TRANSLATION_ROWS: TranslationRow[] = [
-  {
-    id: "translation-flowers",
-    text: "muchas flores son blancas",
-    translation: "miak xochitl istak",
-    suggestions: ["Confirm plural agreement", "Review color adjective placement"],
-  },
-  {
-    id: "translation-water",
-    text: "el agua corre rapido",
-    translation: "atl motlaloa niman",
-    suggestions: ["Check tense marker", "Verify natural word order"],
-  },
-  {
-    id: "translation-family",
-    text: "mi familia habla nahuatl",
-    translation: "nochan tlatoa nahuatl",
-    suggestions: ["Validate possessive form", "Flag dialect-specific vocabulary"],
-  },
-];
-
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: options?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
@@ -219,10 +207,12 @@ function sourceColor(source: SourceType) {
 
 function statusColor(status: string) {
   switch (status) {
+    case "accepted":
     case "approved":
     case "ready":
     case "succeeded":
       return "green";
+    case "updated":
     case "edited":
     case "running":
       return "violet";
@@ -247,8 +237,10 @@ export function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [ocrSuggestions, setOcrSuggestions] = useState<Suggestion[]>([]);
+  const [translationLabels, setTranslationLabels] = useState<Label[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [datasetsLoading, setDatasetsLoading] = useState(true);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [working, setWorking] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("pos");
@@ -256,10 +248,10 @@ export function App() {
   const [addLanguageFormOpen, setAddLanguageFormOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
 
-  const [datasetName, setDatasetName] = useState("Nahuatl field notes");
-  const [languageCode, setLanguageCode] = useState("nah");
-  const [languageName, setLanguageName] = useState("Nahuatl");
-  const [manualText, setManualText] = useState("muchas flores son blancas\nel agua corre rapido");
+  const [datasetName, setDatasetName] = useState("");
+  const [languageCode, setLanguageCode] = useState("");
+  const [languageName, setLanguageName] = useState("");
+  const [manualText, setManualText] = useState("");
   const [manualSource, setManualSource] = useState<SourceType>("text");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [tokenDrafts, setTokenDrafts] = useState<DraftMap>({});
@@ -277,7 +269,10 @@ export function App() {
 
   const pendingPosCount = dashboard?.suggestion_counts["pos:pending"] ?? 0;
   const acceptedPosCount =
-    (dashboard?.suggestion_counts["pos:approved"] ?? 0) + (dashboard?.suggestion_counts["pos:edited"] ?? 0);
+    (dashboard?.suggestion_counts["pos:accepted"] ?? 0) +
+    (dashboard?.suggestion_counts["pos:updated"] ?? 0) +
+    (dashboard?.suggestion_counts["pos:approved"] ?? 0) +
+    (dashboard?.suggestion_counts["pos:edited"] ?? 0);
   const pendingOcrCount = dashboard?.suggestion_counts["ocr:pending"] ?? 0;
 
   useEffect(() => {
@@ -293,7 +288,7 @@ export function App() {
   }, [selectedDatasetId]);
 
   async function loadDatasets() {
-    setLoading(true);
+    setDatasetsLoading(true);
     try {
       const rows = await api<Dataset[]>("/datasets");
       setDatasets(rows);
@@ -303,21 +298,24 @@ export function App() {
     } catch (error) {
       showError(error);
     } finally {
-      setLoading(false);
+      setDatasetsLoading(false);
     }
   }
 
   async function refreshWorkspace(datasetId = selectedDatasetId) {
     if (!datasetId) return;
+    setWorkspaceLoading(true);
     try {
-      const [nextDashboard, nextSuggestions, nextOcrSuggestions] = await Promise.all([
+      const [nextDashboard, nextSuggestions, nextOcrSuggestions, nextTranslationLabels] = await Promise.all([
         api<Dashboard>(`/datasets/${datasetId}/dashboard`),
         api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`),
         api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`),
+        api<{ labels: Label[] }>(`/datasets/${datasetId}/labels?type=translation&limit=500`),
       ]);
       setDashboard(nextDashboard);
       setSuggestions(nextSuggestions.suggestions);
       setOcrSuggestions(nextOcrSuggestions.suggestions);
+      setTranslationLabels(nextTranslationLabels.labels);
       setTokenDrafts(previous => {
         const next = { ...previous };
         for (const suggestion of nextSuggestions.suggestions) {
@@ -334,6 +332,8 @@ export function App() {
       });
     } catch (error) {
       showError(error);
+    } finally {
+      setWorkspaceLoading(false);
     }
   }
 
@@ -463,16 +463,16 @@ export function App() {
   async function reviewSuggestion(suggestion: Suggestion, action: SuggestionStatus) {
     await runAction(async () => {
       const payload =
-        action === "edited" && suggestion.type === "pos"
+        action === "updated" && suggestion.type === "pos"
           ? { action, edited_tokens: tokenDrafts[suggestion.id] ?? suggestion.tokens }
-          : action === "edited"
+          : action === "updated"
             ? { action, edited_text: ocrDrafts[suggestion.id] ?? suggestion.suggested_text ?? "" }
-            : { action };
+              : { action };
       return api<Suggestion>(`/suggestions/${suggestion.id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
-    }, action === "approved" ? "Suggestion approved" : action === "denied" ? "Suggestion denied" : "Suggestion edited");
+    }, action === "accepted" ? "Suggestion accepted" : action === "denied" ? "Suggestion denied" : "Suggestion updated");
   }
 
   async function trainPosModel() {
@@ -495,9 +495,11 @@ export function App() {
     setDashboard(null);
     setSuggestions([]);
     setOcrSuggestions([]);
+    setTranslationLabels([]);
     setTokenDrafts({});
     setOcrDrafts({});
     setJobs([]);
+    setWorkspaceLoading(false);
   }
 
   function updateTokenDraft(suggestionId: string, tokenIndex: number, tag: string | null) {
@@ -521,17 +523,6 @@ export function App() {
     if (value === "pos" || value === "ocr" || value === "translate" || value === "upload" || value === "models") {
       setActiveTab(value);
     }
-  }
-
-  if (loading) {
-    return (
-      <Box bg={UI.background} mih="100vh" p="xl">
-        <Group justify="center" mt="20vh">
-          <Loader color="violet" />
-          <Text c="dimmed">Loading workspace…</Text>
-        </Group>
-      </Box>
-    );
   }
 
   return (
@@ -652,7 +643,20 @@ export function App() {
                   </Text>
                 </Box>
               ) : null}
-              {datasets.length === 0 ? (
+              {datasetsLoading ? (
+                sidebarCollapsed ? (
+                  <ActionIcon aria-label="Loading languages" disabled radius="md" size={46} variant="subtle">
+                    <Loader color="violet" size="xs" />
+                  </ActionIcon>
+                ) : (
+                  <Group gap="xs" px="xs" py="sm">
+                    <Loader color="violet" size="xs" />
+                    <Text c="dimmed" size="sm">
+                      Loading languages…
+                    </Text>
+                  </Group>
+                )
+              ) : datasets.length === 0 ? (
                 <Text c="dimmed" px={sidebarCollapsed ? 0 : "xs"} size="sm" ta={sidebarCollapsed ? "center" : "left"}>
                   {sidebarCollapsed ? "None" : "No languages yet."}
                 </Text>
@@ -762,7 +766,7 @@ export function App() {
                       label="Dataset"
                       name="datasetName"
                       onChange={event => setDatasetName(event.currentTarget.value)}
-                      placeholder="Nahuatl field notes…"
+                      placeholder="Dataset name"
                       size="xs"
                       value={datasetName}
                     />
@@ -772,7 +776,7 @@ export function App() {
                         label="Code"
                         name="languageCode"
                         onChange={event => setLanguageCode(event.currentTarget.value)}
-                        placeholder="nah…"
+                        placeholder="Language code"
                         size="xs"
                         spellCheck={false}
                         value={languageCode}
@@ -782,7 +786,7 @@ export function App() {
                         label="Language"
                         name="languageName"
                         onChange={event => setLanguageName(event.currentTarget.value)}
-                        placeholder="Nahuatl…"
+                        placeholder="Language name"
                         size="xs"
                         value={languageName}
                       />
@@ -824,6 +828,7 @@ export function App() {
               </Paper>
             ) : null}
 
+            {selectedDataset ? (
             <Tabs value={activeTab} onChange={handleTabChange} radius="md" variant="pills">
               <Tabs.List>
                 <Tabs.Tab leftSection={<TbTags aria-hidden="true" size={16} />} value="pos">
@@ -847,6 +852,7 @@ export function App() {
                 <PosSuggestionsTable
                   suggestions={suggestions}
                   tokenDrafts={tokenDrafts}
+                  loading={workspaceLoading}
                   working={working}
                   onGenerate={() => void generatePosSuggestions()}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
@@ -859,6 +865,7 @@ export function App() {
                   latestAssetImport={latestAssetImport}
                   suggestions={ocrSuggestions}
                   drafts={ocrDrafts}
+                  loading={workspaceLoading}
                   working={working}
                   onRunOcr={() => void runOcr()}
                   onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
@@ -867,7 +874,7 @@ export function App() {
               </Tabs.Panel>
 
               <Tabs.Panel value="translate" pt="md">
-                <TranslationTable rows={TRANSLATION_ROWS} />
+                <TranslationTable labels={translationLabels} loading={workspaceLoading} />
               </Tabs.Panel>
 
               <Tabs.Panel value="upload" pt="md">
@@ -926,7 +933,7 @@ export function App() {
                           Upload
                         </Button>
                       </Group>
-                      <ImportsTable imports={dashboard?.imports ?? []} />
+                      <ImportsTable imports={dashboard?.imports ?? []} loading={workspaceLoading} />
                     </Stack>
                   </PaperPanel>
                 </SimpleGrid>
@@ -941,6 +948,16 @@ export function App() {
                 />
               </Tabs.Panel>
             </Tabs>
+            ) : datasetsLoading ? (
+              <Paper withBorder radius="md" p="lg" style={{ background: UI.panel, borderColor: UI.border }}>
+                <LoadingBlock message="Loading workspace data…" />
+              </Paper>
+            ) : (
+              <EmptyState
+                title="No backend data yet"
+                message="Create a language from the sidebar or import data once a language exists."
+              />
+            )}
           </Stack>
         </Box>
       </AppShell.Main>
@@ -992,6 +1009,32 @@ function PaperPanel({ title, eyebrow, children }: { title: string; eyebrow: stri
           </Title>
         </Box>
         {children}
+      </Stack>
+    </Paper>
+  );
+}
+
+function LoadingBlock({ message = "Loading data…" }: { message?: string }) {
+  return (
+    <Group gap="sm" py="lg">
+      <Loader color="violet" size="sm" />
+      <Text c="dimmed" size="sm">
+        {message}
+      </Text>
+    </Group>
+  );
+}
+
+function EmptyState({ title, message }: { title: string; message: string }) {
+  return (
+    <Paper withBorder radius="md" p="lg" style={{ background: UI.panel, borderColor: UI.border }}>
+      <Stack gap={4}>
+        <Title order={3} size="h4">
+          {title}
+        </Title>
+        <Text c="dimmed" size="sm">
+          {message}
+        </Text>
       </Stack>
     </Paper>
   );
@@ -1059,13 +1102,13 @@ function SuggestionActions({
 }) {
   return (
     <Group gap="xs">
-      <Button color="green" disabled={working} onClick={() => onReview(suggestion, "approved")} size="compact-xs">
+      <Button color="green" disabled={working} onClick={() => onReview(suggestion, "accepted")} size="compact-xs">
         Approve
       </Button>
       <Button
         color="violet"
         disabled={working}
-        onClick={() => onReview(suggestion, "edited")}
+        onClick={() => onReview(suggestion, "updated")}
         size="compact-xs"
         variant="light"
       >
@@ -1081,6 +1124,7 @@ function SuggestionActions({
 function PosSuggestionsTable({
   suggestions,
   tokenDrafts,
+  loading,
   working,
   onGenerate,
   onReview,
@@ -1088,6 +1132,7 @@ function PosSuggestionsTable({
 }: {
   suggestions: Suggestion[];
   tokenDrafts: DraftMap;
+  loading: boolean;
   working: boolean;
   onGenerate: () => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
@@ -1183,7 +1228,9 @@ function PosSuggestionsTable({
             Generate 5 Suggestions
           </Button>
         </Group>
-        {suggestions.length === 0 ? (
+        {loading ? (
+          <LoadingBlock message="Loading POS suggestions…" />
+        ) : suggestions.length === 0 ? (
           <Text c="dimmed" size="sm">
             No pending POS suggestions. Generate a batch after uploading text.
           </Text>
@@ -1220,7 +1267,7 @@ function PosSuggestionsTable({
   );
 }
 
-function ImportsTable({ imports }: { imports: ImportRecord[] }) {
+function ImportsTable({ imports, loading = false }: { imports: ImportRecord[]; loading?: boolean }) {
   const columns = useMemo(() => {
     const columnHelper = createColumnHelper<ImportRecord>();
 
@@ -1268,6 +1315,10 @@ function ImportsTable({ imports }: { imports: ImportRecord[] }) {
     getCoreRowModel: getCoreRowModel(),
   });
 
+  if (loading) {
+    return <LoadingBlock message="Loading imports…" />;
+  }
+
   if (imports.length === 0) {
     return (
       <Text c="dimmed" size="sm">
@@ -1307,6 +1358,7 @@ function OcrSuggestionsTable({
   latestAssetImport,
   suggestions,
   drafts,
+  loading,
   working,
   onRunOcr,
   onDraftChange,
@@ -1315,6 +1367,7 @@ function OcrSuggestionsTable({
   latestAssetImport: ImportRecord | null;
   suggestions: Suggestion[];
   drafts: TextDraftMap;
+  loading: boolean;
   working: boolean;
   onRunOcr: () => void;
   onDraftChange: (id: string, value: string) => void;
@@ -1396,7 +1449,9 @@ function OcrSuggestionsTable({
             Run OCR
           </Button>
         </Group>
-        {suggestions.length === 0 ? (
+        {loading ? (
+          <LoadingBlock message="Loading OCR suggestions…" />
+        ) : suggestions.length === 0 ? (
           <Text c="dimmed" size="sm">
             No pending OCR suggestions.
           </Text>
@@ -1433,20 +1488,27 @@ function OcrSuggestionsTable({
   );
 }
 
-function TranslationTable({ rows }: { rows: TranslationRow[] }) {
+function translationValue(label: Label) {
+  const value = label.value["text"];
+  return typeof value === "string" ? value : JSON.stringify(label.value);
+}
+
+function TranslationTable({ labels, loading }: { labels: Label[]; loading: boolean }) {
   const columns = useMemo(() => {
-    const columnHelper = createColumnHelper<TranslationRow>();
+    const columnHelper = createColumnHelper<Label>();
 
     return [
-      columnHelper.accessor("text", {
+      columnHelper.accessor(row => row.data_text ?? "", {
+        id: "text",
         header: "Text",
         cell: info => (
           <Text fw={700} size="sm">
-            {info.getValue()}
+            {info.getValue() || "No source text"}
           </Text>
         ),
       }),
-      columnHelper.accessor("translation", {
+      columnHelper.accessor(row => translationValue(row), {
+        id: "translation",
         header: "Translation",
         cell: info => (
           <Text size="sm">
@@ -1454,16 +1516,12 @@ function TranslationTable({ rows }: { rows: TranslationRow[] }) {
           </Text>
         ),
       }),
-      columnHelper.accessor("suggestions", {
-        header: "Suggestions",
+      columnHelper.accessor("source", {
+        header: "Source",
         cell: info => (
-          <Group gap="xs">
-            {info.getValue().map(suggestion => (
-              <Badge key={suggestion} color="violet" radius="sm" variant="light">
-                {suggestion}
-              </Badge>
-            ))}
-          </Group>
+          <Badge color="violet" radius="sm" variant="light">
+            {info.getValue()}
+          </Badge>
         ),
       }),
     ];
@@ -1471,12 +1529,19 @@ function TranslationTable({ rows }: { rows: TranslationRow[] }) {
 
   const table = useReactTable({
     columns,
-    data: rows,
+    data: labels,
     getCoreRowModel: getCoreRowModel(),
   });
 
   return (
-    <PaperPanel title="Translate" eyebrow="Text, translation, suggestions">
+    <PaperPanel title="Translate" eyebrow="Backend translation labels">
+      {loading ? (
+        <LoadingBlock message="Loading translations…" />
+      ) : labels.length === 0 ? (
+        <Text c="dimmed" size="sm">
+          No translation labels yet. Import a CSV with a translation column to populate this table.
+        </Text>
+      ) : (
       <ScrollArea type="auto">
         <Table miw={780} highlightOnHover>
           <Table.Thead>
@@ -1501,6 +1566,7 @@ function TranslationTable({ rows }: { rows: TranslationRow[] }) {
           </Table.Tbody>
         </Table>
       </ScrollArea>
+      )}
     </PaperPanel>
   );
 }
