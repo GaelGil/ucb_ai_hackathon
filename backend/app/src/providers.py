@@ -263,7 +263,7 @@ class BrowserbaseResearchProvider:
             f"dataset_id={dataset.id} type={research_type} query={query!r}",
             flush=True,
         )
-        sources = self._search_and_fetch(query)
+        sources, warnings = self._search_and_fetch(query)
         print(
             "[research-debug] browserbase search/fetch complete "
             f"dataset_id={dataset.id} type={research_type} source_count={len(sources)}",
@@ -316,6 +316,8 @@ class BrowserbaseResearchProvider:
             "task_notes": data.get("task_notes") or "",
             "usage": completion.usage,
         }
+        if warnings:
+            metadata["source_mode"] = "browserbase_search_fallback"
         return ResearchArtifact(
             dataset_id=dataset.id,
             language_code=dataset.language_code,
@@ -324,6 +326,7 @@ class BrowserbaseResearchProvider:
             guidelines=guidelines,
             sources=sources,
             metadata=metadata,
+            warnings=warnings,
         )
 
     def evaluate_research(
@@ -358,7 +361,7 @@ class BrowserbaseResearchProvider:
             },
         )
 
-    def _search_and_fetch(self, query: str) -> list[ResearchSource]:
+    def _search_and_fetch(self, query: str) -> tuple[list[ResearchSource], list[ProviderWarning]]:
         headers = {"x-bb-api-key": self.api_key or "", "Content-Type": "application/json"}
         with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
             with self.tracer.span("browserbase.search", query=query, num_results=6):
@@ -386,6 +389,7 @@ class BrowserbaseResearchProvider:
             )
 
             sources: list[ResearchSource] = []
+            fetch_errors: list[str] = []
             for result in results[:4]:
                 try:
                     with self.tracer.span("browserbase.fetch", url=result["url"]):
@@ -426,14 +430,38 @@ class BrowserbaseResearchProvider:
                             f"url={result['url']}",
                             flush=True,
                         )
+                        fetch_errors.append(f"{result['url']}: empty content")
                 except Exception as exc:
+                    fetch_errors.append(f"{result.get('url')}: {type(exc).__name__}: {exc}")
                     print(
                         "[research-debug] browserbase fetch tool error "
                         f"url={result.get('url')} error={type(exc).__name__}: {exc}",
                         flush=True,
                     )
                     continue
-        return sources
+        if sources:
+            return sources, []
+
+        fallback_sources = self._fallback_search_sources(results, query)
+        if fallback_sources:
+            first_error = fetch_errors[0] if fetch_errors else "no fetched page content"
+            warning = ProviderWarning(
+                provider=self.provider,
+                stage="browserbase.fetch",
+                message=(
+                    "Browserbase fetch returned no usable page content; using Browserbase search results only. "
+                    f"First fetch issue: {first_error}"
+                ),
+                fallback=True,
+            )
+            print(
+                "[research-debug] browserbase fetch fallback activated "
+                f"source_count={len(fallback_sources)} fetch_issue_count={len(fetch_errors)}",
+                flush=True,
+            )
+            return fallback_sources, [warning]
+
+        return [], []
 
     def _research_query(self, dataset: Dataset, research_type: str) -> str:
         if research_type == "translation":
@@ -504,8 +532,33 @@ class BrowserbaseResearchProvider:
                 continue
             url = item.get("url") or item.get("link")
             if url:
-                results.append({"url": str(url), "title": str(item.get("title") or url)})
+                excerpt = (
+                    item.get("excerpt")
+                    or item.get("snippet")
+                    or item.get("description")
+                    or item.get("content")
+                    or item.get("text")
+                    or ""
+                )
+                results.append({"url": str(url), "title": str(item.get("title") or url), "excerpt": str(excerpt)})
         return results
+
+    def _fallback_search_sources(self, results: list[dict[str, str]], query: str) -> list[ResearchSource]:
+        sources: list[ResearchSource] = []
+        for result in results[:4]:
+            url = result.get("url")
+            if not url:
+                continue
+            title = result.get("title") or url
+            excerpt = result.get("excerpt") or f"Browserbase search result for: {query}"
+            sources.append(
+                ResearchSource(
+                    title=title,
+                    url=url,
+                    excerpt=self._compact(excerpt, 900),
+                )
+            )
+        return sources
 
     def _string_list(self, value: object) -> list[str]:
         if not isinstance(value, list):
