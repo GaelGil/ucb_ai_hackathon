@@ -1,2 +1,5 @@
-from app.repositories import *  # noqa: F401,F403
+class NotFoundError(ValueError):
+    pass
 
+
+__all__ = ["NotFoundError"]
