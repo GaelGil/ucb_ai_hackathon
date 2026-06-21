@@ -9,7 +9,7 @@ from app.database.models.label import LabelType
 from app.database.models.language import new_id, now_utc
 
 if TYPE_CHECKING:
-    from app.database.models.data import DataRow
+    from app.database.models.data_row import DataRow
     from app.database.models.dataset import Dataset
     from app.database.models.label import Label
     from app.database.models.research import Research

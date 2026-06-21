@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 from app.utils.mappers import dataset_to_api, research_to_api
 from app.database.models import DataRow, Dataset, Research
 from app.database.models.research import ResearchType
-from app.utils.jobs import JobRunner
+from app.utils.job_runner import JobRunner
 from app.schemas import Job, ResearchArtifact
 from app.integrations.providers import BrowserbaseResearchProvider
 from app.exceptions import NotFoundError

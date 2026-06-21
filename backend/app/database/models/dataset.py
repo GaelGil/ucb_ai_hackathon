@@ -7,7 +7,7 @@ from sqlmodel import Field, Relationship, SQLModel
 from app.database.models.language import new_id, now_utc
 
 if TYPE_CHECKING:
-    from app.database.models.data import DataRow
+    from app.database.models.data_row import DataRow
     from app.database.models.import_record import ImportRecord
     from app.database.models.label import Label
     from app.database.models.language import Language

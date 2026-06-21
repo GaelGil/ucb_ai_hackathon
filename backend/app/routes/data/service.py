@@ -11,13 +11,13 @@ from sqlmodel import Session, select
 from app import schemas as api
 from app.utils.mappers import data_row_to_text_item, import_to_api, job_to_api, label_to_api, source_type_to_db
 from app.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Job, Label
-from app.database.models.data import DataSourceType
+from app.database.models.data_row import DataSourceType
 from app.database.models.import_record import ImportStatus
 from app.database.models.job import JobStatus as DbJobStatus
 from app.database.models.label import LabelSource, LabelType
 from app.database.models.language import now_utc
 from app.database.models.suggestion import SuggestionStatus
-from app.utils.jobs import JobRunner
+from app.utils.job_runner import JobRunner
 from app.utils.parsing import parse_text_items
 from app.integrations.providers import OCRProvider
 from app.exceptions import NotFoundError

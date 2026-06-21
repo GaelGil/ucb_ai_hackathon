@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Column, DateTime, JSON, Text
 from sqlmodel import Field, Relationship, SQLModel
 
-from app.database.models.data import DataSourceType
+from app.database.models.data_row import DataSourceType
 from app.database.models.language import new_id, now_utc
 
 if TYPE_CHECKING:
-    from app.database.models.data import DataRow
+    from app.database.models.data_row import DataRow
     from app.database.models.dataset import Dataset
     from app.database.models.label import Label
 

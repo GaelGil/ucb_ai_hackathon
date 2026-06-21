@@ -2,7 +2,7 @@ from sqlmodel import select
 
 from app.routes.labels.service import LabelsService
 from app.database.models import DataRow, Dataset, ImportRecord, Label, Language
-from app.database.models.data import DataSourceType
+from app.database.models.data_row import DataSourceType
 from app.database.models.label import LabelSource, LabelType
 from scripts.create_pos_rows_from_translation import create_pos_rows_from_translation
 

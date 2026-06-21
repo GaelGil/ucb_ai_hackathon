@@ -15,7 +15,7 @@ from app.database.models.label import LabelSource, LabelType
 from app.database.models.language import now_utc
 from app.database.models.research import ResearchType
 from app.database.models.suggestion import SuggestionStatus as DbSuggestionStatus
-from app.utils.jobs import JobRunner
+from app.utils.job_runner import JobRunner
 from app.schemas import (
     Label as ApiLabel,
     LabelSource as ApiLabelSource,
