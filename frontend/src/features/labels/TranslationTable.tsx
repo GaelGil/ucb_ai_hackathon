@@ -251,7 +251,11 @@ export function TranslationTable({
         centered
         onClose={() => setReviewingSuggestion(null)}
         opened={reviewingSuggestion !== null}
+        overlayProps={{ backgroundOpacity: 0.74, blur: 3 }}
+        padding="lg"
+        radius="md"
         scrollAreaComponent={ScrollArea.Autosize}
+        shadow="xl"
         size="lg"
         title="Review Translation Suggestion"
       >

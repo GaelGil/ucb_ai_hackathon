@@ -55,6 +55,56 @@ class FakePosLLM:
         )
 
 
+class RetryPosLLM:
+    provider = "anthropic"
+    model = "fake-claude"
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete_json(self, *, task_name, system, prompt, max_tokens=None):
+        self.calls.append({"task_name": task_name, "system": system, "prompt": prompt, "max_tokens": max_tokens})
+        if len(self.calls) == 1:
+            raise RuntimeError("Anthropic pos_suggestions returned invalid JSON.")
+        return JsonCompletion(
+            data={
+                "tokens": [
+                    {
+                        "index": 0,
+                        "token": "amoxtli",
+                        "suggested_pos": "NOUN",
+                        "confidence": 0.82,
+                        "rationale": "nominal form",
+                    }
+                ],
+                "rationale": "Retry used compact JSON.",
+            },
+            usage={"input_tokens": 8, "output_tokens": 12},
+        )
+
+
+class RetryResearchLLM:
+    provider = "anthropic"
+    model = "fake-claude"
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete_json(self, *, task_name, system, prompt, max_tokens=None):
+        self.calls.append({"task_name": task_name, "system": system, "prompt": prompt, "max_tokens": max_tokens})
+        if len(self.calls) == 1:
+            raise RuntimeError("Anthropic pos_research returned invalid JSON.")
+        return JsonCompletion(
+            data={
+                "summary": "Compact POS research notes after retry.",
+                "guidelines": ["Use syntax notes first."],
+                "examples": [{"text": "amoxtli", "tokens": [{"token": "amoxtli", "upos": "NOUN", "reason": "nominal"}]}],
+                "evaluation": {"score": 0.8, "feedback": "Valid compact JSON."},
+            },
+            usage={"input_tokens": 12, "output_tokens": 18},
+        )
+
+
 class FakeResponse:
     def __init__(self, status_code: int, payload: dict, url: str) -> None:
         self.status_code = status_code
@@ -179,6 +229,8 @@ def test_pos_research_query_and_prompt_are_syntax_focused(monkeypatch) -> None:
 
     prompt = json_module.loads(fake_llm.calls[0]["prompt"])
     prompt_text = json_module.dumps(prompt)
+    assert fake_llm.calls[0]["max_tokens"] == 3200
+    assert "compact valid JSON object" in fake_llm.calls[0]["system"]
     assert prompt["task"] == "part-of-speech tagging guidance using Universal Dependencies UPOS tags"
     assert "word order" in prompt_text
     assert "SVO" in prompt_text
@@ -186,6 +238,7 @@ def test_pos_research_query_and_prompt_are_syntax_focused(monkeypatch) -> None:
     assert "morphology" in prompt_text
     assert "upos_inventory" in prompt["required_json_shape"]
     assert "token -> UPOS -> reason" in prompt_text
+    assert prompt["output_limits"]["summary_words_max"] == 120
 
 
 def test_pos_suggestion_prompt_requires_cached_research_context() -> None:
@@ -204,17 +257,137 @@ def test_pos_suggestion_prompt_requires_cached_research_context() -> None:
         summary="Nahuatl POS notes: flexible word order and rich morphology matter for tagging.",
         guidelines=["Use syntax and morphology notes before assigning UPOS tags."],
         sources=[ResearchSource(title="Nahuatl syntax", url="https://example.test", excerpt="word order and POS notes")],
-        metadata={"language_profile": {"basic_word_order": "free/flexible"}},
+        metadata={
+            "language_profile": {"basic_word_order": "free/flexible"},
+            "task_notes": "Use language-specific syntax.",
+            "upos_inventory": {"common": ["NOUN", "VERB"]},
+            "examples": [{"text": "amoxtli", "tokens": [{"token": "amoxtli", "upos": "NOUN"}]}],
+            "evaluation": {"score": 0.9},
+        },
     )
 
     provider.suggest("amoxtli", research)
 
     call = fake_llm.calls[0]
     prompt = json_module.loads(call["prompt"])
+    assert call["max_tokens"] == 2400
     assert "syntax, morphology, word order, and POS inventory" in call["system"]
     assert prompt["research"]["summary"] == research.summary
+    assert prompt["research"]["language_profile"] == {"basic_word_order": "free/flexible"}
+    assert "sources" not in prompt["research"]
+    assert "warnings" not in prompt["research"]
+    assert "evaluation" not in prompt["research"]
+    assert "evaluation" not in prompt["required_json_shape"]
     assert any("cached POS research" in instruction for instruction in prompt["instructions"])
     assert any("token indexes" in instruction for instruction in prompt["instructions"])
+
+
+def test_pos_suggestion_prompt_includes_reviewer_feedback_examples() -> None:
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key="test-anthropic-key",
+        arize_enabled=False,
+        phoenix_enabled=False,
+    )
+    fake_llm = FakePosLLM()
+    provider = PosAnnotationProvider(settings=settings, llm=fake_llm, tracer=Tracer(settings))
+    research = ResearchArtifact(
+        dataset_id="ds_test",
+        language_code="nah",
+        type="pos",
+        summary="Nahuatl POS notes.",
+        guidelines=["Use reviewer examples first."],
+        sources=[],
+        metadata={},
+    )
+    feedback_examples = {
+        "positive_examples": [
+            {
+                "kind": "positive",
+                "source": "ai_accepted",
+                "text": "amoxtli",
+                "tokens": [{"token": "amoxtli", "upos": "NOUN", "rationale": "accepted by reviewer"}],
+            }
+        ],
+        "negative_examples": [
+            {
+                "kind": "negative",
+                "source": "denied_suggestion",
+                "text": "amoxtli",
+                "tokens": [{"token": "amoxtli", "upos": "VERB", "rationale": "denied by reviewer"}],
+                "warning": "Reviewer denied this suggestion.",
+            }
+        ],
+    }
+
+    provider.suggest("amoxtli", research, feedback_examples=feedback_examples)
+
+    prompt = json_module.loads(fake_llm.calls[0]["prompt"])
+    assert prompt["reviewer_feedback"] == feedback_examples
+    assert any("reviewer-preferred positive examples" in instruction for instruction in prompt["instructions"])
+    assert any("denied POS suggestions as mistakes" in instruction for instruction in prompt["instructions"])
+
+
+def test_pos_suggestion_invalid_json_retries_once_with_compact_prompt() -> None:
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key="test-anthropic-key",
+        arize_enabled=False,
+        phoenix_enabled=False,
+    )
+    fake_llm = RetryPosLLM()
+    provider = PosAnnotationProvider(settings=settings, llm=fake_llm, tracer=Tracer(settings))
+    research = ResearchArtifact(
+        dataset_id="ds_test",
+        language_code="nah",
+        type="pos",
+        summary="Nahuatl POS notes.",
+        guidelines=["Use syntax notes."],
+        sources=[],
+        metadata={},
+    )
+
+    tokens = provider.suggest("amoxtli", research)
+
+    assert tokens[0].suggested_pos == "NOUN"
+    assert [call["task_name"] for call in fake_llm.calls] == ["pos_suggestions", "pos_suggestions_retry"]
+    assert all(call["max_tokens"] == 2400 for call in fake_llm.calls)
+    retry_prompt = json_module.loads(fake_llm.calls[1]["prompt"])
+    assert "previous_error" in retry_prompt
+    assert "Return one compact valid JSON object only" in retry_prompt["instruction"]
+    assert retry_prompt["original_request"]["tokens"] == [{"index": 0, "token": "amoxtli"}]
+
+
+def test_research_invalid_json_retries_once_with_compact_prompt(monkeypatch) -> None:
+    fake_client, _ = make_fake_http_client(
+        search_payload={
+            "results": [
+                {
+                    "url": "https://example.test/nahuatl-pos",
+                    "title": "Nahuatl syntax",
+                    "snippet": "Nahuatl word order and POS examples.",
+                }
+            ]
+        },
+        fetch_status=402,
+    )
+    monkeypatch.setattr("app.src.providers.httpx.Client", fake_client)
+    fake_llm = RetryResearchLLM()
+    provider = provider_with(fake_llm)
+
+    artifact = provider.create_research(
+        Dataset(name="Nahuatl", language_code="nah", language_name="Nahuatl"),
+        ["amoxtli"],
+        "pos",
+    )
+
+    assert artifact.summary == "Compact POS research notes after retry."
+    assert [call["task_name"] for call in fake_llm.calls] == ["pos_research", "pos_research_retry"]
+    assert all(call["max_tokens"] == 3200 for call in fake_llm.calls)
+    retry_prompt = json_module.loads(fake_llm.calls[1]["prompt"])
+    assert "previous_error" in retry_prompt
+    assert "Return one compact valid JSON object only" in retry_prompt["instruction"]
+    assert retry_prompt["original_request"]["task"] == "part-of-speech tagging guidance using Universal Dependencies UPOS tags"
 
 
 def test_browserbase_empty_search_still_fails_without_calling_llm(monkeypatch) -> None:

@@ -10,13 +10,24 @@ from sqlmodel import Session, select
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app.src.database.models  # noqa: F401  (registers SQLModel tables)
-from app.src.database.models import DataRow, Dataset, ImportRecord, Label, Language
+from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
 from app.src.database.models.data import DataSourceType
 from app.src.database.models.label import LabelType
 from app.src.database.session import engine
 
 
 SCRIPT_NAME = "create_pos_rows_from_translation.py"
+LANGUAGE_CODE_ALIAS_GROUPS = (
+    {"glc", "ga", "gle", "irish"},
+)
+
+
+@dataclass
+class TranslationSeedCandidate:
+    source_row: DataRow
+    translation_label: Label
+    text: str
+    text_source: str
 
 
 @dataclass
@@ -27,8 +38,12 @@ class PosSeedSummary:
     translation_rows_found: int
     rows_created: int
     duplicates_skipped: int
+    seed_rows_deleted: int
+    suggestions_deleted: int
+    labels_deleted: int
     limit: int
     dry_run: bool
+    reset_existing: bool
 
 
 def create_pos_rows_from_translation(
@@ -38,6 +53,7 @@ def create_pos_rows_from_translation(
     language_codes: list[str] | None = None,
     limit: int = 100,
     dry_run: bool = False,
+    reset_existing: bool = False,
 ) -> list[PosSeedSummary]:
     if limit <= 0:
         raise ValueError("limit must be greater than 0")
@@ -48,10 +64,27 @@ def create_pos_rows_from_translation(
     for dataset in datasets:
         language = session.get(Language, dataset.language_id)
         language_code = language.code if language else "unknown"
-        translation_rows = _translation_rows_for_dataset(session, dataset.id)[:limit]
-        existing_source_ids = _existing_pos_seed_source_ids(session, dataset.id)
-        rows_to_create = [row for row in translation_rows if row.id not in existing_source_ids]
-        duplicates_skipped = len(translation_rows) - len(rows_to_create)
+        seed_rows_deleted = 0
+        suggestions_deleted = 0
+        labels_deleted = 0
+
+        if reset_existing:
+            seed_rows_deleted, suggestions_deleted, labels_deleted = _delete_existing_pos_seed_rows(
+                session,
+                dataset.id,
+                dry_run=dry_run,
+            )
+
+        translation_candidates = _translation_seed_candidates_for_dataset(
+            session,
+            dataset_id=dataset.id,
+            language_code=language_code,
+        )[:limit]
+        existing_source_ids = set() if reset_existing else _existing_pos_seed_source_ids(session, dataset.id)
+        rows_to_create = [
+            candidate for candidate in translation_candidates if candidate.source_row.id not in existing_source_ids
+        ]
+        duplicates_skipped = len(translation_candidates) - len(rows_to_create)
 
         if rows_to_create and not dry_run:
             import_record = ImportRecord(
@@ -70,20 +103,24 @@ def create_pos_rows_from_translation(
             session.flush()
 
             next_row_index = _next_row_index(session, dataset.id)
-            for offset, source_row in enumerate(rows_to_create):
+            for offset, candidate in enumerate(rows_to_create):
+                source_row = candidate.source_row
                 metadata = dict(source_row.row_metadata or {})
                 seed_row = DataRow(
                     dataset_id=dataset.id,
                     import_id=import_record.id,
                     row_index=next_row_index + offset,
                     source_type=DataSourceType.csv,
-                    text_content=source_row.text_content,
+                    text_content=candidate.text,
                     row_metadata={
-                        "csv": {"text": source_row.text_content or "", "tags": ""},
+                        "csv": {"text": candidate.text, "tags": ""},
                         "pos_seed": {
                             "source": "translation_rows",
                             "source_data_row_id": source_row.id,
                             "source_import_id": source_row.import_id,
+                            "translation_label_id": candidate.translation_label.id,
+                            "text_language": language_code,
+                            "text_source": candidate.text_source,
                             "script": SCRIPT_NAME,
                         },
                         "source_row_metadata": metadata,
@@ -97,11 +134,15 @@ def create_pos_rows_from_translation(
                 dataset_id=dataset.id,
                 dataset_name=dataset.name,
                 language_code=language_code,
-                translation_rows_found=len(translation_rows),
+                translation_rows_found=len(translation_candidates),
                 rows_created=len(rows_to_create) if not dry_run else 0,
                 duplicates_skipped=duplicates_skipped,
+                seed_rows_deleted=seed_rows_deleted,
+                suggestions_deleted=suggestions_deleted,
+                labels_deleted=labels_deleted,
                 limit=limit,
                 dry_run=dry_run,
+                reset_existing=reset_existing,
             )
         )
 
@@ -151,29 +192,91 @@ def _selected_datasets(
     return list(datasets_with_translation_rows)
 
 
-def _translation_rows_for_dataset(session: Session, dataset_id: str) -> list[DataRow]:
+def _translation_seed_candidates_for_dataset(
+    session: Session,
+    *,
+    dataset_id: str,
+    language_code: str,
+) -> list[TranslationSeedCandidate]:
     rows = session.exec(
-        select(DataRow)
+        select(DataRow, Label)
         .join(Label, Label.data_row_id == DataRow.id)
         .where(DataRow.dataset_id == dataset_id)
         .where(Label.type == LabelType.translation)
-        .where(DataRow.text_content.is_not(None))
         .order_by(DataRow.created_at, DataRow.row_index, DataRow.id)
     ).all()
-    deduped: list[DataRow] = []
+    candidates: list[TranslationSeedCandidate] = []
     seen_ids: set[str] = set()
-    for row in rows:
-        if row.id in seen_ids or not str(row.text_content or "").strip():
+    for source_row, translation_label in rows:
+        if source_row.id in seen_ids:
             continue
-        deduped.append(row)
-        seen_ids.add(row.id)
-    return deduped
+        text, text_source = _low_resource_text_for_pos_seed(
+            source_row,
+            translation_label,
+            language_code=language_code,
+        )
+        if not text:
+            continue
+        candidates.append(
+            TranslationSeedCandidate(
+                source_row=source_row,
+                translation_label=translation_label,
+                text=text,
+                text_source=text_source,
+            )
+        )
+        seen_ids.add(source_row.id)
+    return candidates
+
+
+def _low_resource_text_for_pos_seed(
+    source_row: DataRow,
+    translation_label: Label,
+    *,
+    language_code: str,
+) -> tuple[str, str]:
+    value = translation_label.value if isinstance(translation_label.value, dict) else {}
+    translation_text = _clean_text(value.get("text")) or _metadata_translation_text(source_row)
+    source_text = _clean_text(source_row.text_content)
+    source_language = _clean_code(value.get("src"))
+    target_language = _clean_code(value.get("target"))
+    dataset_language = _clean_code(language_code)
+
+    if _language_codes_match(target_language, dataset_language) and translation_text:
+        return translation_text, "translation_label"
+    if _language_codes_match(source_language, dataset_language) and source_text:
+        return source_text, "source_row"
+    return "", ""
+
+
+def _metadata_translation_text(source_row: DataRow) -> str:
+    metadata = source_row.row_metadata if isinstance(source_row.row_metadata, dict) else {}
+    csv_metadata = metadata.get("csv") if isinstance(metadata, dict) else None
+    if not isinstance(csv_metadata, dict):
+        return ""
+    return _clean_text(csv_metadata.get("translation"))
+
+
+def _language_codes_match(value: str, language_code: str) -> bool:
+    if value == language_code:
+        return True
+    for alias_group in LANGUAGE_CODE_ALIAS_GROUPS:
+        if language_code in alias_group and value in alias_group:
+            return True
+    return False
+
+
+def _clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _clean_code(value: object) -> str:
+    return str(value or "").strip().lower()
 
 
 def _existing_pos_seed_source_ids(session: Session, dataset_id: str) -> set[str]:
     source_ids: set[str] = set()
-    rows = session.exec(select(DataRow).where(DataRow.dataset_id == dataset_id)).all()
-    for row in rows:
+    for row in _pos_seed_rows_for_dataset(session, dataset_id):
         metadata = row.row_metadata if isinstance(row.row_metadata, dict) else {}
         pos_seed = metadata.get("pos_seed") if isinstance(metadata, dict) else None
         if isinstance(pos_seed, dict) and pos_seed.get("source") == "translation_rows":
@@ -181,6 +284,43 @@ def _existing_pos_seed_source_ids(session: Session, dataset_id: str) -> set[str]
             if source_id:
                 source_ids.add(source_id)
     return source_ids
+
+
+def _pos_seed_rows_for_dataset(session: Session, dataset_id: str) -> list[DataRow]:
+    rows = session.exec(select(DataRow).where(DataRow.dataset_id == dataset_id)).all()
+    seed_rows: list[DataRow] = []
+    for row in rows:
+        metadata = row.row_metadata if isinstance(row.row_metadata, dict) else {}
+        pos_seed = metadata.get("pos_seed") if isinstance(metadata, dict) else None
+        if isinstance(pos_seed, dict) and pos_seed.get("source") == "translation_rows":
+            seed_rows.append(row)
+    return seed_rows
+
+
+def _delete_existing_pos_seed_rows(
+    session: Session,
+    dataset_id: str,
+    *,
+    dry_run: bool,
+) -> tuple[int, int, int]:
+    seed_rows = _pos_seed_rows_for_dataset(session, dataset_id)
+    seed_row_ids = [row.id for row in seed_rows]
+    if not seed_row_ids:
+        return 0, 0, 0
+
+    suggestions = session.exec(select(AiSuggestion).where(AiSuggestion.data_row_id.in_(seed_row_ids))).all()
+    labels = session.exec(select(Label).where(Label.data_row_id.in_(seed_row_ids))).all()
+
+    if not dry_run:
+        for suggestion in suggestions:
+            session.delete(suggestion)
+        for label in labels:
+            session.delete(label)
+        for row in seed_rows:
+            session.delete(row)
+        session.flush()
+
+    return len(seed_rows), len(suggestions), len(labels)
 
 
 def _next_row_index(session: Session, dataset_id: str) -> int:
@@ -196,6 +336,11 @@ def main() -> int:
     parser.add_argument("--language-code", action="append", dest="language_codes")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--reset-existing",
+        action="store_true",
+        help="Delete existing POS seed rows for selected datasets before reseeding them.",
+    )
     args = parser.parse_args()
 
     try:
@@ -206,6 +351,7 @@ def main() -> int:
                 language_codes=args.language_codes,
                 limit=args.limit,
                 dry_run=args.dry_run,
+                reset_existing=args.reset_existing,
             )
     except ValueError as exc:
         print(f"[pos-seed] error {exc}", flush=True)
@@ -222,6 +368,8 @@ def main() -> int:
             f"mode={mode} dataset_id={summary.dataset_id} dataset_name={summary.dataset_name!r} "
             f"language_code={summary.language_code} translation_rows_found={summary.translation_rows_found} "
             f"rows_created={summary.rows_created} duplicates_skipped={summary.duplicates_skipped} "
+            f"reset_existing={summary.reset_existing} seed_rows_deleted={summary.seed_rows_deleted} "
+            f"suggestions_deleted={summary.suggestions_deleted} labels_deleted={summary.labels_deleted} "
             f"limit={summary.limit}",
             flush=True,
         )

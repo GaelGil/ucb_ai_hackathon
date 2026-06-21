@@ -34,7 +34,11 @@ class FakePosProvider:
     provider = "fake-anthropic"
     model_name = "fake-claude"
 
-    def suggest(self, text, research=None):
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+
+    def suggest(self, text, research=None, feedback_examples=None):
+        self.requests.append({"text": text, "research": research, "feedback_examples": feedback_examples})
         tokens = text.split()
         return [
             TokenSuggestion(
@@ -46,6 +50,21 @@ class FakePosProvider:
             )
             for index, token in enumerate(tokens)
         ]
+
+
+class FlakyPosProvider(FakePosProvider):
+    provider = "flaky-anthropic"
+
+    def __init__(self, fail_all: bool = False) -> None:
+        super().__init__()
+        self.fail_all = fail_all
+        self.calls = 0
+
+    def suggest(self, text, research=None, feedback_examples=None):
+        self.calls += 1
+        if self.fail_all or self.calls == 1:
+            raise RuntimeError(f"Fake POS failure for: {text}")
+        return super().suggest(text, research, feedback_examples=feedback_examples)
 
 
 class FakeTranslationProvider:
@@ -225,6 +244,84 @@ def test_denied_pos_suggestion_can_be_regenerated(client: TestClient) -> None:
     assert len(second) == 1
     assert second[0]["original_text"] == "uno dos tres"
     assert second[0]["id"] != first[0]["id"]
+
+
+def test_pos_suggestions_include_reviewer_feedback_examples(client: TestClient) -> None:
+    provider = client.app.state.services.pos_provider
+    dataset = client.post(
+        "/datasets",
+        json={"name": "Reviewer feedback", "language_code": "feedback", "language_name": "Feedback"},
+    ).json()
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "accepted example\ndenied example\npending example", "source_type": "text"},
+    )
+    client.post(f"/datasets/{dataset['id']}/research").json()
+    first = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()["suggestions"]
+    client.patch(f"/suggestions/{first[0]['id']}", json={"action": "accepted"})
+    client.patch(f"/suggestions/{first[1]['id']}", json={"action": "denied"})
+
+    response = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()
+
+    feedback = provider.requests[-1]["feedback_examples"]
+    assert response["job"]["metadata"]["feedback_positive_count"] == 1
+    assert response["job"]["metadata"]["feedback_negative_count"] == 1
+    assert feedback["positive_examples"][0]["text"] == "accepted example"
+    assert feedback["positive_examples"][0]["source"] == "ai_accepted"
+    assert feedback["positive_examples"][0]["tokens"][0]["upos"] == "NOUN"
+    assert feedback["negative_examples"][0]["text"] == "denied example"
+    assert feedback["negative_examples"][0]["source"] == "denied_suggestion"
+    assert "denied" in feedback["negative_examples"][0]["warning"].lower()
+
+
+def test_pos_suggestions_continue_after_row_failure(client: TestClient) -> None:
+    client.app.state.services = replace(
+        client.app.state.services,
+        pos_provider=FlakyPosProvider(),
+    )
+    dataset = client.post(
+        "/datasets",
+        json={"name": "Partial POS", "language_code": "partial", "language_name": "Partial"},
+    ).json()
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "bad row\nsalvage row", "source_type": "text"},
+    )
+    client.post(f"/datasets/{dataset['id']}/research").json()
+
+    response = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()
+
+    assert response["job"]["status"] == "succeeded"
+    assert response["job"]["metadata"]["created_count"] == 1
+    assert response["job"]["metadata"]["failed_count"] == 1
+    assert len(response["job"]["metadata"]["row_errors"]) == 1
+    assert len(response["suggestions"]) == 1
+    assert response["suggestions"][0]["original_text"] == "salvage row"
+
+
+def test_pos_suggestions_fail_with_row_metadata_when_all_rows_fail(client: TestClient) -> None:
+    client.app.state.services = replace(
+        client.app.state.services,
+        pos_provider=FlakyPosProvider(fail_all=True),
+    )
+    dataset = client.post(
+        "/datasets",
+        json={"name": "Failed POS", "language_code": "failed", "language_name": "Failed"},
+    ).json()
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "first row\nsecond row", "source_type": "text"},
+    )
+    client.post(f"/datasets/{dataset['id']}/research").json()
+
+    response = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()
+
+    assert response["suggestions"] == []
+    assert response["job"]["status"] == "failed"
+    assert "POS suggestions failed for every candidate row" in response["job"]["error"]
+    assert response["job"]["metadata"]["created_count"] == 0
+    assert response["job"]["metadata"]["failed_count"] == 2
+    assert len(response["job"]["metadata"]["row_errors"]) == 2
 
 
 def test_translation_suggestions_require_translation_research(client: TestClient) -> None:

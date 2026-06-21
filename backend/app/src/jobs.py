@@ -109,11 +109,15 @@ class JobRunner:
             if persisted is None:
                 persisted = db_job
                 self.session.add(persisted)
+            extra_metadata = getattr(exc, "metadata", None)
+            error_metadata = {"error": str(exc)}
+            if isinstance(extra_metadata, dict):
+                error_metadata = {**error_metadata, **extra_metadata}
             persisted.status = DbJobStatus.failed
             persisted.progress = 100
             persisted.message = "Failed"
             persisted.error = str(exc)
-            persisted.job_metadata = {**(persisted.job_metadata or {}), "error": str(exc)}
+            persisted.job_metadata = {**(persisted.job_metadata or {}), **error_metadata}
             persisted.updated_at = now_utc()
             self.session.commit()
             self.session.refresh(persisted)

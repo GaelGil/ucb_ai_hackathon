@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.src.api.mappers import (
     ai_suggestion_to_api,
+    label_to_api,
     source_type_to_api,
     suggestion_status_to_db,
     suggestion_type_to_db,
@@ -29,9 +32,16 @@ from app.src.models import (
     SuggestionReview,
     SuggestionStatus,
     SuggestionType,
+    UPOS_TAGS,
 )
 from app.src.providers import PosAnnotationProvider, TranslationProvider
 from app.src.repositories import NotFoundError
+
+
+class SuggestionBatchError(RuntimeError):
+    def __init__(self, message: str, metadata: dict) -> None:
+        super().__init__(message)
+        self.metadata = metadata
 
 
 class LabelsService:
@@ -218,6 +228,7 @@ class LabelsService:
             db_label_type,
             [row.id for row in rows],
         )
+        labels_by_row_id = self._labels_by_row_id(dataset_id, db_label_type, [row.id for row in rows])
         if needs_review:
             rows = [row for row in rows if row.id in pending_by_row_id]
         total = len(rows)
@@ -234,6 +245,7 @@ class LabelsService:
                 pending_suggestion=ai_suggestion_to_api(pending_by_row_id[row.id])
                 if row.id in pending_by_row_id
                 else None,
+                label=label_to_api(labels_by_row_id[row.id]) if row.id in labels_by_row_id else None,
             )
             for row in page_rows
         ], total
@@ -317,13 +329,7 @@ class LabelsService:
         return by_row_id
 
     def _annotation_rows_for_label_type(self, dataset_id: str, label_type: LabelType) -> list[DataRow]:
-        completed_label_row_ids = {
-            label.data_row_id
-            for label in self.session.exec(
-                select(Label).where(Label.dataset_id == dataset_id).where(Label.type == label_type)
-            ).all()
-        }
-        rows = [
+        all_rows = [
             row
             for row in self.session.exec(
                 select(DataRow)
@@ -331,13 +337,39 @@ class LabelsService:
                 .where(DataRow.text_content.is_not(None))
                 .order_by(DataRow.created_at, DataRow.row_index, DataRow.id)
             ).all()
-            if row.id not in completed_label_row_ids and row.text_content
+            if row.text_content
         ]
         if label_type == LabelType.pos:
-            seeded_rows = [row for row in rows if self._is_pos_seed_row(row)]
-            if seeded_rows:
-                rows = seeded_rows
-        return rows
+            seeded_rows = [row for row in all_rows if self._is_pos_seed_row(row)]
+            return seeded_rows or all_rows
+
+        completed_label_row_ids = {
+            label.data_row_id
+            for label in self.session.exec(
+                select(Label).where(Label.dataset_id == dataset_id).where(Label.type == label_type)
+            ).all()
+        }
+        return [row for row in all_rows if row.id not in completed_label_row_ids]
+
+    def _labels_by_row_id(
+        self,
+        dataset_id: str,
+        label_type: LabelType,
+        data_row_ids: list[str],
+    ) -> dict[str, Label]:
+        if not data_row_ids:
+            return {}
+        labels = self.session.exec(
+            select(Label)
+            .where(Label.dataset_id == dataset_id)
+            .where(Label.type == label_type)
+            .where(Label.data_row_id.in_(data_row_ids))
+            .order_by(Label.updated_at.desc(), Label.created_at.desc(), Label.id.desc())
+        ).all()
+        by_row_id: dict[str, Label] = {}
+        for label in labels:
+            by_row_id.setdefault(label.data_row_id, label)
+        return by_row_id
 
     def review_suggestion(self, suggestion_id: str, review: SuggestionReview) -> Suggestion:
         suggestion = self.session.get(AiSuggestion, suggestion_id)
@@ -433,7 +465,16 @@ class LabelsService:
     ) -> tuple[list[AiSuggestion], dict]:
         created: list[AiSuggestion] = []
         candidates = self._candidate_text_rows(dataset.id, LabelType.pos, limit)
+        feedback_examples = self._pos_feedback_examples(dataset.id)
         evaluations: list[dict] = []
+        row_errors: list[dict] = []
+        print(
+            "[research-debug] creating pos suggestions "
+            f"dataset_id={dataset.id} research_id={research.id} candidate_count={len(candidates)} limit={limit} "
+            f"positive_examples={len(feedback_examples.get('positive_examples', []))} "
+            f"negative_examples={len(feedback_examples.get('negative_examples', []))}",
+            flush=True,
+        )
         with self.research_service.tracer.span(
             "pos.suggestions.create",
             dataset_id=dataset.id,
@@ -441,7 +482,29 @@ class LabelsService:
             candidate_count=len(candidates),
         ):
             for row in candidates:
-                tokens = self.pos_provider.suggest(row.text_content or "", research)
+                print(
+                    "[research-debug] creating pos suggestion for row "
+                    f"dataset_id={dataset.id} row_id={row.id} text_chars={len(row.text_content or '')}",
+                    flush=True,
+                )
+                try:
+                    tokens = self.pos_provider.suggest(
+                        row.text_content or "",
+                        research,
+                        feedback_examples=feedback_examples,
+                    )
+                except Exception as exc:
+                    error = {
+                        "row_id": row.id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    row_errors.append(error)
+                    print(
+                        "[research-debug] pos suggestion row failed "
+                        f"dataset_id={dataset.id} row_id={row.id} error={error['error']}",
+                        flush=True,
+                    )
+                    continue
                 confidence = sum(token.confidence for token in tokens) / max(len(tokens), 1)
                 evaluation = self._evaluate_pos(row.text_content or "", tokens, research, dataset.id, row.id)
                 if evaluation:
@@ -463,18 +526,156 @@ class LabelsService:
                 )
                 self.session.add(suggestion)
                 created.append(suggestion)
+                print(
+                    "[research-debug] pos suggestion row created "
+                    f"dataset_id={dataset.id} row_id={row.id} token_count={len(tokens)}",
+                    flush=True,
+                )
+        if not created and row_errors:
+            first_error = row_errors[0]["error"]
+            raise SuggestionBatchError(
+                f"POS suggestions failed for every candidate row. First error: {first_error}",
+                {
+                    "dataset_id": dataset.id,
+                    "created_count": 0,
+                    "failed_count": len(row_errors),
+                    "row_errors": row_errors[:5],
+                    "research_id": research.id,
+                    "research_type": ResearchType.pos.value,
+                    "provider": getattr(self.pos_provider, "provider", "anthropic"),
+                    "model": getattr(self.pos_provider, "model_name", None),
+                },
+            )
         self.session.commit()
         for suggestion in created:
             self.session.refresh(suggestion)
+        print(
+            "[research-debug] pos suggestions saved "
+            f"dataset_id={dataset.id} created_count={len(created)} failed_count={len(row_errors)}",
+            flush=True,
+        )
         return created, {
             "dataset_id": dataset.id,
             "created_count": len(created),
+            "failed_count": len(row_errors),
+            "row_errors": row_errors[:5],
             "research_id": research.id,
             "research_type": ResearchType.pos.value,
             "provider": getattr(self.pos_provider, "provider", "anthropic"),
             "model": getattr(self.pos_provider, "model_name", None),
+            "feedback_positive_count": len(feedback_examples.get("positive_examples", [])),
+            "feedback_negative_count": len(feedback_examples.get("negative_examples", [])),
             "evaluation": self._evaluation_summary(evaluations),
         }
+
+    def _pos_feedback_examples(self, dataset_id: str) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "positive_examples": self._positive_pos_examples(dataset_id),
+            "negative_examples": self._negative_pos_examples(dataset_id),
+        }
+
+    def _positive_pos_examples(self, dataset_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        records = self.session.exec(
+            select(Label, DataRow.text_content)
+            .join(DataRow, Label.data_row_id == DataRow.id)
+            .where(Label.dataset_id == dataset_id)
+            .where(Label.type == LabelType.pos)
+            .where(
+                Label.source.in_(
+                    [
+                        LabelSource.ai_accepted,
+                        LabelSource.ai_updated,
+                        LabelSource.human,
+                        LabelSource.csv_import,
+                    ]
+                )
+            )
+            .order_by(Label.updated_at.desc(), Label.created_at.desc(), Label.id.desc())
+            .limit(limit)
+        ).all()
+        examples: list[dict[str, Any]] = []
+        for label, row_text in records:
+            example = self._pos_feedback_example_from_value(
+                value=label.value,
+                text=row_text,
+                source=label.source.value,
+                kind="positive",
+            )
+            if example:
+                examples.append(example)
+        return examples
+
+    def _negative_pos_examples(self, dataset_id: str, limit: int = 3) -> list[dict[str, Any]]:
+        records = self.session.exec(
+            select(AiSuggestion, DataRow.text_content)
+            .join(DataRow, AiSuggestion.data_row_id == DataRow.id)
+            .where(AiSuggestion.dataset_id == dataset_id)
+            .where(AiSuggestion.label_type == LabelType.pos)
+            .where(AiSuggestion.status == DbSuggestionStatus.denied)
+            .order_by(AiSuggestion.updated_at.desc(), AiSuggestion.created_at.desc(), AiSuggestion.id.desc())
+            .limit(limit)
+        ).all()
+        examples: list[dict[str, Any]] = []
+        for suggestion, row_text in records:
+            example = self._pos_feedback_example_from_value(
+                value=suggestion.original_value,
+                text=row_text,
+                source="denied_suggestion",
+                kind="negative",
+            )
+            if example:
+                example["warning"] = "Reviewer denied this suggestion; avoid repeating these tags without stronger evidence."
+                examples.append(example)
+        return examples
+
+    def _pos_feedback_example_from_value(
+        self,
+        *,
+        value: dict[str, Any],
+        text: str | None,
+        source: str,
+        kind: str,
+    ) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        example_text = self._compact_feedback_text(str(text or value.get("text") or ""), 260)
+        tokens = self._pos_feedback_tokens(value.get("tokens"))
+        tags = self._compact_feedback_text(str(value.get("tags") or ""), 220)
+        if not example_text or (not tokens and not tags):
+            return {}
+        example: dict[str, Any] = {
+            "kind": kind,
+            "source": source,
+            "text": example_text,
+        }
+        if tokens:
+            example["tokens"] = tokens
+        elif tags:
+            example["tags"] = tags
+        return example
+
+    def _pos_feedback_tokens(self, value: object) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        tokens: list[dict[str, Any]] = []
+        for item in value[:24]:
+            if not isinstance(item, dict):
+                continue
+            token = self._compact_feedback_text(str(item.get("token") or ""), 80)
+            tag = str(item.get("suggested_pos") or item.get("upos") or "").upper()
+            if not token or tag not in UPOS_TAGS:
+                continue
+            tokens.append(
+                {
+                    "token": token,
+                    "upos": tag,
+                    "rationale": self._compact_feedback_text(str(item.get("rationale") or ""), 120),
+                }
+            )
+        return tokens
+
+    def _compact_feedback_text(self, text: str, limit: int) -> str:
+        return " ".join(text.split())[:limit]
 
     def _create_translation_suggestion_rows(
         self, dataset: Dataset, research, limit: int

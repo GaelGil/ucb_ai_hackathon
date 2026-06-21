@@ -73,6 +73,7 @@ export type AnnotationRow = {
   source_type: SourceType;
   created_at: string;
   pending_suggestion: Suggestion | null;
+  label: Label | null;
 };
 
 export type Label = {

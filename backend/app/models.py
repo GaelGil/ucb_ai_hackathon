@@ -216,6 +216,7 @@ class AnnotationRow(BaseModel):
     source_type: SourceType
     created_at: datetime
     pending_suggestion: Suggestion | None = None
+    label: Label | None = None
 
 
 class SuggestionReview(BaseModel):

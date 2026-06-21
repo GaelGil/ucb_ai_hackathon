@@ -32,9 +32,43 @@ import type {
   ReviewFilter,
   Suggestion,
   SuggestionStatus,
+  TokenSuggestion,
 } from "@/types/domain";
 
 import { SuggestionActions } from "./SuggestionActions";
+
+function annotationStatus(row: AnnotationRow) {
+  if (row.pending_suggestion) return "Pending review";
+  if (row.label) return "Reviewed";
+  return "Needs suggestion";
+}
+
+function annotationStatusColor(row: AnnotationRow) {
+  if (row.pending_suggestion) return "yellow";
+  if (row.label) return "green";
+  return "gray";
+}
+
+function tokensFromLabel(label: AnnotationRow["label"]): TokenSuggestion[] {
+  const tokens = label?.value["tokens"];
+  if (!Array.isArray(tokens)) return [];
+  return tokens.flatMap((token, fallbackIndex): TokenSuggestion[] => {
+    if (!token || typeof token !== "object") return [];
+    const record = token as Record<string, unknown>;
+    const tokenText = typeof record["token"] === "string" ? record["token"] : "";
+    const suggestedPos = typeof record["suggested_pos"] === "string" ? record["suggested_pos"] : "";
+    if (!tokenText || !suggestedPos) return [];
+    const index = typeof record["index"] === "number" ? record["index"] : fallbackIndex;
+    const confidence = typeof record["confidence"] === "number" ? record["confidence"] : 0;
+    const rationale = typeof record["rationale"] === "string" ? record["rationale"] : "";
+    return [{ index, token: tokenText, suggested_pos: suggestedPos, confidence, rationale }];
+  });
+}
+
+function tagsFromLabel(label: AnnotationRow["label"]) {
+  const tags = label?.value["tags"];
+  return typeof tags === "string" ? tags : "";
+}
 
 export function PosSuggestionsTable({
   rows,
@@ -75,6 +109,43 @@ export function PosSuggestionsTable({
     [rows, reviewingSuggestion],
   );
 
+  function openSavedLabelDetail(row: AnnotationRow) {
+    const label = row.label;
+    if (!label) return;
+    const tokens = tokensFromLabel(label);
+    const csvTags = tagsFromLabel(label);
+    onOpenDetail({
+      title: "Reviewed POS Label",
+      rows: [
+        { label: "Text", value: row.text },
+        {
+          label: "Tags",
+          value: tokens.length > 0 ? (
+            <Stack gap={6}>
+              {tokens.map(token => (
+                <Group key={`${label.id}-${token.index}`} gap="xs" wrap="wrap">
+                  <Badge color="gray" radius="sm" variant="light">
+                    {token.token}
+                  </Badge>
+                  <Badge color="violet" radius="sm" variant="light">
+                    {token.suggested_pos}
+                  </Badge>
+                  <Text c="dimmed" size="xs">
+                    {formatPercent(token.confidence)}
+                  </Text>
+                </Group>
+              ))}
+            </Stack>
+          ) : (
+            csvTags || "No POS tags saved"
+          ),
+        },
+        { label: "Source", value: label.source },
+        { label: "Label ID", value: label.id },
+      ],
+    });
+  }
+
   const columns = useMemo(() => {
     const columnHelper = createColumnHelper<AnnotationRow>();
 
@@ -92,7 +163,7 @@ export function PosSuggestionsTable({
                   title: "POS Row",
                   rows: [
                     { label: "Text", value: row.text },
-                    { label: "Status", value: row.pending_suggestion ? "Pending review" : "Needs suggestion" },
+                    { label: "Status", value: annotationStatus(row) },
                     { label: "Row ID", value: row.data_row_id },
                   ],
                 });
@@ -105,10 +176,10 @@ export function PosSuggestionsTable({
         id: "status",
         header: "Status",
         cell: info => {
-          const hasSuggestion = Boolean(info.row.original.pending_suggestion);
+          const row = info.row.original;
           return (
-            <Badge color={hasSuggestion ? "yellow" : "gray"} radius="sm" variant={hasSuggestion ? "dot" : "light"}>
-              {hasSuggestion ? "Pending review" : "Needs suggestion"}
+            <Badge color={annotationStatusColor(row)} radius="sm" variant={row.pending_suggestion ? "dot" : "light"}>
+              {annotationStatus(row)}
             </Badge>
           );
         },
@@ -117,13 +188,23 @@ export function PosSuggestionsTable({
         id: "suggestion",
         header: "AI Suggestion",
         cell: info => {
-          const suggestion = info.row.original.pending_suggestion;
-          if (!suggestion) {
+          const row = info.row.original;
+          const suggestion = row.pending_suggestion;
+          if (suggestion) {
+            return (
+              <Tooltip label="Review suggestion">
+                <ActionIcon aria-label="Review POS suggestion" onClick={() => setReviewingSuggestion(suggestion)} variant="light">
+                  <TbEye aria-hidden="true" size={17} />
+                </ActionIcon>
+              </Tooltip>
+            );
+          }
+          if (!row.label) {
             return null;
           }
           return (
-            <Tooltip label="Review suggestion">
-              <ActionIcon aria-label="Review POS suggestion" onClick={() => setReviewingSuggestion(suggestion)} variant="light">
+            <Tooltip label="View saved POS label">
+              <ActionIcon aria-label="View saved POS label" color="teal" onClick={() => openSavedLabelDetail(row)} variant="light">
                 <TbEye aria-hidden="true" size={17} />
               </ActionIcon>
             </Tooltip>
@@ -226,7 +307,11 @@ export function PosSuggestionsTable({
         centered
         onClose={() => setReviewingSuggestion(null)}
         opened={reviewingSuggestion !== null}
+        overlayProps={{ backgroundOpacity: 0.74, blur: 3 }}
+        padding="lg"
+        radius="md"
         scrollAreaComponent={ScrollArea.Autosize}
+        shadow="xl"
         size="lg"
         title="Review POS Suggestion"
       >
