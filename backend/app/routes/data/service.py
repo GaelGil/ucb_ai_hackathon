@@ -9,7 +9,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app import schemas as api
-from app.api.mappers import data_row_to_text_item, import_to_api, job_to_api, label_to_api, source_type_to_db
+from app.routes.mappers import data_row_to_text_item, import_to_api, job_to_api, label_to_api, source_type_to_db
 from app.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Job, Label
 from app.database.models.data import DataSourceType
 from app.database.models.import_record import ImportStatus
@@ -627,7 +627,7 @@ class DataService:
             return metadata
 
         job = self.jobs.run("ocr", callback)
-        from app.api.mappers import ai_suggestion_to_api
+        from app.routes.mappers import ai_suggestion_to_api
 
         return [ai_suggestion_to_api(suggestion) for suggestion in created], job
 

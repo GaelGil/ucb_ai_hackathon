@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlmodel import Session, select
 
-from app.api.mappers import dataset_to_api, research_to_api
+from app.routes.mappers import dataset_to_api, research_to_api
 from app.database.models import DataRow, Dataset, Research
 from app.database.models.research import ResearchType
 from app.jobs import JobRunner

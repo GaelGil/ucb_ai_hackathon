@@ -5,9 +5,9 @@ import threading
 
 from flask import Blueprint, request
 
-from app.api.context import get_data_service, get_services
-from app.api.responses import json_response
-from app.api.data.service import DataService
+from app.routes.context import get_data_service, get_services
+from app.routes.responses import json_response
+from app.routes.data.service import DataService
 from app.jobs import JobRunner
 from sqlmodel import Session
 from app.schemas import ImportKind, ImportResponse, OcrRequest, SourceType

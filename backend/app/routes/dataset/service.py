@@ -4,7 +4,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
-from app.api.mappers import dataset_to_api, import_to_api, job_to_api, research_to_api, suggestion_status_to_api
+from app.routes.mappers import dataset_to_api, import_to_api, job_to_api, research_to_api, suggestion_status_to_api
 from app.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Job, Label, Language, Research
 from app.database.models.data import DataSourceType
 from app.database.models.job import JobStatus as DbJobStatus
