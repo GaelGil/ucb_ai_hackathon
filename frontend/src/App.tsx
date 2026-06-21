@@ -7,6 +7,7 @@ import {
   Card,
   Divider,
   FileInput,
+  Grid,
   Group,
   Loader,
   Modal,
@@ -188,6 +189,16 @@ type Job = {
   metadata: Record<string, unknown>;
 };
 
+type DetailRow = {
+  label: string;
+  value: ReactNode;
+};
+
+type DetailContent = {
+  title: string;
+  rows: DetailRow[];
+};
+
 type Toast = {
   tone: "violet" | "red" | "green";
   message: string;
@@ -220,18 +231,6 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function optionalApi<T>(path: string, options?: RequestInit): Promise<T | null> {
-  const response = await fetch(`${API_BASE_URL}${path}`, options);
-  if (response.status === 404) {
-    return null;
-  }
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed with ${response.status}`);
-  }
-  return response.json() as Promise<T>;
-}
-
 const queryKeys = {
   datasets: ["datasets"] as const,
   workspace: (datasetId: string) => ["workspace", datasetId] as const,
@@ -250,8 +249,9 @@ function useDatasets() {
   });
 }
 
-function useWorkspaceData(datasetId: string) {
+function useWorkspaceData(datasetId: string, activeTab: WorkspaceTab, activeResearchType: ResearchType) {
   const enabled = datasetId.length > 0;
+  const researchPanelVisible = activeTab === "pos" || activeTab === "translate";
   const dashboardQuery = useQuery({
     queryKey: queryKeys.dashboard(datasetId),
     queryFn: ({ signal }) => api<Dashboard>(`/datasets/${datasetId}/dashboard`, { signal }),
@@ -263,7 +263,7 @@ function useWorkspaceData(datasetId: string) {
       api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`, {
         signal,
       }),
-    enabled,
+    enabled: enabled && activeTab === "pos",
   });
   const ocrSuggestionsQuery = useQuery({
     queryKey: queryKeys.suggestions(datasetId, "ocr", "pending", 5),
@@ -271,7 +271,7 @@ function useWorkspaceData(datasetId: string) {
       api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`, {
         signal,
       }),
-    enabled,
+    enabled: enabled && activeTab === "ocr",
   });
   const translationSuggestionsQuery = useQuery({
     queryKey: queryKeys.suggestions(datasetId, "translation", "pending", 5),
@@ -280,23 +280,26 @@ function useWorkspaceData(datasetId: string) {
         `/datasets/${datasetId}/suggestions?type=translation&status=pending&limit=5`,
         { signal },
       ),
-    enabled,
+    enabled: enabled && activeTab === "translate",
   });
   const translationLabelsQuery = useQuery({
     queryKey: queryKeys.labels(datasetId, "translation", 500),
     queryFn: ({ signal }) => api<{ labels: Label[] }>(`/datasets/${datasetId}/labels?type=translation&limit=500`, { signal }),
-    enabled,
+    enabled: enabled && activeTab === "translate",
   });
   const posResearchQuery = useQuery({
     queryKey: queryKeys.research(datasetId, "pos"),
-    queryFn: ({ signal }) => optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=pos`, { signal }),
-    enabled,
+    queryFn: ({ signal }) => api<ResearchArtifact | null>(`/datasets/${datasetId}/research?type=pos`, { signal }),
+    enabled: enabled && researchPanelVisible && activeResearchType === "pos",
   });
   const translationResearchQuery = useQuery({
     queryKey: queryKeys.research(datasetId, "translation"),
     queryFn: ({ signal }) =>
-      optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=translation`, { signal }),
-    enabled,
+      api<ResearchArtifact | null>(`/datasets/${datasetId}/research?type=translation`, { signal }),
+    enabled:
+      enabled &&
+      researchPanelVisible &&
+      (activeTab === "translate" || activeResearchType === "translation"),
   });
   const queries = [
     dashboardQuery,
@@ -381,11 +384,18 @@ function csvFormatHint(importKind: ImportKind) {
 }
 
 function importSuccessMessage(base: string, job: Job) {
+  if (isJobActive(job)) {
+    return `${base.replace(/ imported$/, " import")} started`;
+  }
   const skipped = Number(job.metadata.skipped_count ?? 0);
   if (!Number.isFinite(skipped) || skipped <= 0) {
     return base;
   }
   return `${base}; skipped ${skipped} row${skipped === 1 ? "" : "s"}`;
+}
+
+function isJobActive(job: Job) {
+  return job.status === "queued" || job.status === "running";
 }
 
 function assertJobSucceeded(job: Job) {
@@ -399,7 +409,9 @@ export function App() {
   const datasetsQuery = useDatasets();
   const datasets = datasetsQuery.data ?? EMPTY_DATASETS;
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
-  const workspaceData = useWorkspaceData(selectedDatasetId);
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("upload");
+  const [activeResearchType, setActiveResearchType] = useState<ResearchType>("pos");
+  const workspaceData = useWorkspaceData(selectedDatasetId, activeTab, activeResearchType);
   const dashboard = workspaceData.dashboard;
   const suggestions = workspaceData.posSuggestions;
   const ocrSuggestions = workspaceData.ocrSuggestions;
@@ -409,11 +421,10 @@ export function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [working, setWorking] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("pos");
-  const [activeResearchType, setActiveResearchType] = useState<ResearchType>("pos");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [addLanguageFormOpen, setAddLanguageFormOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<DetailContent | null>(null);
 
   const [datasetName, setDatasetName] = useState("");
   const [languageCode, setLanguageCode] = useState("");
@@ -447,6 +458,7 @@ export function App() {
   const uploadFileIsCsv = uploadFile?.name.toLowerCase().endsWith(".csv") ?? false;
   const datasetsLoading = datasetsQuery.isLoading;
   const workspaceLoading = workspaceData.isLoading;
+  const activeJobIds = useMemo(() => jobs.filter(isJobActive).map(job => job.id).join(","), [jobs]);
 
   useEffect(() => {
     if (!datasetsQuery.isSuccess) return;
@@ -472,6 +484,36 @@ export function App() {
       showError(workspaceData.error);
     }
   }, [workspaceData.error]);
+
+  useEffect(() => {
+    const jobIds = activeJobIds.split(",").filter(Boolean);
+    if (jobIds.length === 0) return;
+    let cancelled = false;
+
+    async function refreshJobs() {
+      try {
+        const responses = await Promise.all(jobIds.map(jobId => api<{ job: Job }>(`/jobs/${jobId}`)));
+        if (cancelled) return;
+        const updates = new Map(responses.map(response => [response.job.id, response.job]));
+        const completed = responses.some(response => !isJobActive(response.job));
+        setJobs(previous => previous.map(job => updates.get(job.id) ?? job));
+        if (completed && selectedDatasetId) {
+          await invalidateDashboard(selectedDatasetId);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          showError(error);
+        }
+      }
+    }
+
+    void refreshJobs();
+    const interval = window.setInterval(() => void refreshJobs(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeJobIds, selectedDatasetId]);
 
   useEffect(() => {
     setTokenDrafts(previous => {
@@ -507,15 +549,37 @@ export function App() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
   }
 
-  async function invalidateWorkspace(datasetId = selectedDatasetId) {
+  async function invalidateDashboard(datasetId = selectedDatasetId) {
     if (!datasetId) return;
-    await queryClient.invalidateQueries({ queryKey: queryKeys.workspace(datasetId) });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(datasetId) });
+  }
+
+  async function invalidateTranslationLabels(datasetId = selectedDatasetId) {
+    if (!datasetId) return;
+    await queryClient.invalidateQueries({ queryKey: queryKeys.labels(datasetId, "translation", 500) });
+  }
+
+  async function invalidateSuggestions(type: SuggestionType, datasetId = selectedDatasetId) {
+    if (!datasetId) return;
+    await queryClient.invalidateQueries({ queryKey: queryKeys.suggestions(datasetId, type, "pending", 5) });
+  }
+
+  async function invalidateResearch(type: ResearchType, datasetId = selectedDatasetId) {
+    if (!datasetId) return;
+    await queryClient.invalidateQueries({ queryKey: queryKeys.research(datasetId, type) });
+  }
+
+  async function invalidateImportResult(importKind: ImportKind, datasetId = selectedDatasetId) {
+    await invalidateDashboard(datasetId);
+    if (importKind === "translation") {
+      await invalidateTranslationLabels(datasetId);
+    }
   }
 
   async function runAction<T>(
     callback: () => Promise<T>,
     successMessage: string | ((result: T) => string),
-    afterSuccess: (result: T) => Promise<void> | void = () => invalidateWorkspace(),
+    afterSuccess: (result: T) => Promise<void> | void = () => invalidateDashboard(),
   ) {
     setWorking(true);
     try {
@@ -593,7 +657,9 @@ export function App() {
       rememberJob(response.job);
       assertJobSucceeded(response.job);
       return response;
-    }, response => importSuccessMessage(importKind === "generic" ? "Text imported" : "CSV labels imported", response.job));
+    }, response => importSuccessMessage(importKind === "generic" ? "Text imported" : "CSV labels imported", response.job), () =>
+      invalidateImportResult(importKind),
+    );
   }
 
   async function importFile() {
@@ -610,7 +676,9 @@ export function App() {
       assertJobSucceeded(response.job);
       setUploadFile(null);
       return response;
-    }, response => importSuccessMessage(fileImportKind === "generic" ? "File imported" : "CSV labels imported", response.job));
+    }, response => importSuccessMessage(fileImportKind === "generic" ? "File imported" : "CSV labels imported", response.job), () =>
+      invalidateImportResult(fileImportKind),
+    );
   }
 
   async function runResearch(force = false, researchType = activeResearchType) {
@@ -621,7 +689,10 @@ export function App() {
       });
       rememberJob(response.job);
       return response;
-    }, force ? `${researchType.toUpperCase()} research refreshed` : `${researchType.toUpperCase()} research ready`);
+    }, force ? `${researchType.toUpperCase()} research refreshed` : `${researchType.toUpperCase()} research ready`, async () => {
+      await invalidateResearch(researchType);
+      await invalidateDashboard();
+    });
   }
 
   async function generatePosSuggestions() {
@@ -634,7 +705,10 @@ export function App() {
       rememberJob(response.job);
       assertJobSucceeded(response.job);
       return response;
-    }, "Generated POS suggestions");
+    }, "Generated POS suggestions", async () => {
+      await invalidateSuggestions("pos");
+      await invalidateDashboard();
+    });
   }
 
   async function generateTranslationSuggestions() {
@@ -647,7 +721,10 @@ export function App() {
       rememberJob(response.job);
       assertJobSucceeded(response.job);
       return response;
-    }, "Generated translation suggestions");
+    }, "Generated translation suggestions", async () => {
+      await invalidateSuggestions("translation");
+      await invalidateDashboard();
+    });
   }
 
   async function runOcr() {
@@ -659,7 +736,10 @@ export function App() {
       });
       rememberJob(response.job);
       return response;
-    }, "OCR suggestions generated");
+    }, "OCR suggestions generated", async () => {
+      await invalidateSuggestions("ocr");
+      await invalidateDashboard();
+    });
   }
 
   async function reviewSuggestion(suggestion: Suggestion, action: SuggestionStatus) {
@@ -676,7 +756,13 @@ export function App() {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
-    }, action === "accepted" ? "Suggestion accepted" : action === "denied" ? "Suggestion denied" : "Suggestion updated");
+    }, action === "accepted" ? "Suggestion accepted" : action === "denied" ? "Suggestion denied" : "Suggestion updated", async () => {
+      await invalidateSuggestions(suggestion.type);
+      if (suggestion.type === "translation") {
+        await invalidateTranslationLabels();
+      }
+      await invalidateDashboard();
+    });
   }
 
   async function trainPosModel() {
@@ -688,11 +774,15 @@ export function App() {
       });
       rememberJob(response.job);
       return response;
-    }, "POS model trigger completed");
+    }, "POS model trigger completed", () => invalidateDashboard());
   }
 
   function rememberJob(job: Job) {
     setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)].slice(0, 5));
+  }
+
+  function openDetail(detail: DetailContent) {
+    setSelectedDetail(detail);
   }
 
   function clearWorkspaceState() {
@@ -722,6 +812,12 @@ export function App() {
   function handleTabChange(value: string | null) {
     if (value === "pos" || value === "ocr" || value === "translate" || value === "upload" || value === "models") {
       setActiveTab(value);
+      if (value === "pos") {
+        setActiveResearchType("pos");
+      }
+      if (value === "translate") {
+        setActiveResearchType("translation");
+      }
     }
   }
 
@@ -755,6 +851,32 @@ export function App() {
               Delete Language
             </Button>
           </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
+        centered
+        onClose={() => setSelectedDetail(null)}
+        opened={selectedDetail !== null}
+        scrollAreaComponent={ScrollArea.Autosize}
+        size="lg"
+        title={selectedDetail?.title ?? "Details"}
+      >
+        <Stack gap="md">
+          {selectedDetail?.rows.map(row => (
+            <Box key={row.label}>
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                {row.label}
+              </Text>
+              {typeof row.value === "string" || typeof row.value === "number" ? (
+                <Text size="sm" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {row.value}
+                </Text>
+              ) : (
+                row.value
+              )}
+            </Box>
+          ))}
         </Stack>
       </Modal>
 
@@ -1030,15 +1152,24 @@ export function App() {
 
             {selectedDataset ? (
             <>
-            <ResearchPanel
-              activeType={activeResearchType}
-              research={researchByType[activeResearchType]}
-              working={working}
-              onResearch={() => void runResearch(false)}
-              onRefreshResearch={() => void runResearch(true)}
-              onTypeChange={setActiveResearchType}
-            />
-            <JobsPanel jobs={jobs} />
+            {activeTab === "pos" || activeTab === "translate" ? (
+              <Grid gutter="md">
+                <Grid.Col span={{ base: 12, lg: 8 }}>
+                  <ResearchPanel
+                    activeType={activeResearchType}
+                    research={researchByType[activeResearchType]}
+                    working={working}
+                    onOpenDetail={openDetail}
+                    onResearch={() => void runResearch(false)}
+                    onRefreshResearch={() => void runResearch(true)}
+                    onTypeChange={setActiveResearchType}
+                  />
+                </Grid.Col>
+                <Grid.Col span={{ base: 12, lg: 4 }}>
+                  <JobsPanel jobs={jobs} />
+                </Grid.Col>
+              </Grid>
+            ) : null}
             <Tabs value={activeTab} onChange={handleTabChange} radius="md" variant="pills">
               <Tabs.List>
                 <Tabs.Tab leftSection={<TbTags aria-hidden="true" size={16} />} value="pos">
@@ -1065,6 +1196,7 @@ export function App() {
                   loading={workspaceLoading}
                   working={working}
                   onGenerate={() => void generatePosSuggestions()}
+                  onOpenDetail={openDetail}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
                   onTokenChange={updateTokenDraft}
                 />
@@ -1077,6 +1209,7 @@ export function App() {
                   drafts={ocrDrafts}
                   loading={workspaceLoading}
                   working={working}
+                  onOpenDetail={openDetail}
                   onRunOcr={() => void runOcr()}
                   onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
@@ -1092,6 +1225,7 @@ export function App() {
                   loading={workspaceLoading}
                   working={working}
                   onGenerate={() => void generateTranslationSuggestions()}
+                  onOpenDetail={openDetail}
                   onDraftChange={(id, value) => setTranslationDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
                 />
@@ -1142,7 +1276,7 @@ export function App() {
                         leftSection={<TbFileText aria-hidden="true" size={16} />}
                         onClick={() => void importManualText()}
                       >
-                        Import Sentences
+                        {working ? "Importing..." : "Import Sentences"}
                       </Button>
                     </Stack>
                   </PaperPanel>
@@ -1179,7 +1313,7 @@ export function App() {
                           leftSection={<TbUpload aria-hidden="true" size={16} />}
                           onClick={() => void importFile()}
                         >
-                          Upload
+                          {working ? "Uploading..." : "Upload"}
                         </Button>
                       </Group>
                       <ImportsTable imports={dashboard?.imports ?? []} loading={workspaceLoading} />
@@ -1290,10 +1424,71 @@ function EmptyState({ title, message }: { title: string; message: string }) {
   );
 }
 
+function CompactPanel({ title, eyebrow, children }: { title: string; eyebrow: string; children: ReactNode }) {
+  return (
+    <Paper withBorder radius="md" p="md" h="100%" style={{ background: UI.panel, borderColor: UI.border }}>
+      <Stack gap="sm" h="100%">
+        <Box>
+          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+            {eyebrow}
+          </Text>
+          <Title order={3} size="h4">
+            {title}
+          </Title>
+        </Box>
+        {children}
+      </Stack>
+    </Paper>
+  );
+}
+
+function PreviewTextButton({
+  text,
+  title,
+  onOpen,
+  fw = 700,
+}: {
+  text: string | null | undefined;
+  title: string;
+  onOpen: () => void;
+  fw?: number;
+}) {
+  const value = text?.trim() || "No text";
+  return (
+    <Button
+      aria-label={`View ${title}`}
+      color="gray"
+      h="auto"
+      justify="start"
+      onClick={onOpen}
+      p={0}
+      radius="sm"
+      variant="subtle"
+      w="100%"
+      styles={{
+        inner: { justifyContent: "flex-start", minWidth: 0 },
+        label: { minWidth: 0, whiteSpace: "normal", width: "100%" },
+      }}
+    >
+      <Text fw={fw} lineClamp={2} size="sm" style={{ minWidth: 0, overflowWrap: "anywhere", textAlign: "left" }}>
+        {value}
+      </Text>
+    </Button>
+  );
+}
+
+function formatTokenDetails(tokens: TokenSuggestion[]) {
+  if (tokens.length === 0) return "No tokens";
+  return tokens
+    .map(token => `${token.index + 1}. ${token.token} -> ${token.suggested_pos} (${formatPercent(token.confidence)})`)
+    .join("\n");
+}
+
 function ResearchPanel({
   activeType,
   research,
   working,
+  onOpenDetail,
   onResearch,
   onRefreshResearch,
   onTypeChange,
@@ -1301,13 +1496,14 @@ function ResearchPanel({
   activeType: ResearchType;
   research: ResearchArtifact | null;
   working: boolean;
+  onOpenDetail: (detail: DetailContent) => void;
   onResearch: () => void;
   onRefreshResearch: () => void;
   onTypeChange: (type: ResearchType) => void;
 }) {
   const title = activeType === "pos" ? "POS research" : "Translation research";
   return (
-    <PaperPanel title="Cached research notes" eyebrow="Dataset + language + task">
+    <CompactPanel title="Cached Research Notes" eyebrow="Dataset + language + task">
       <Stack gap="sm">
         <Group align="end" gap="xs" wrap="wrap">
           <Select
@@ -1330,30 +1526,52 @@ function ResearchPanel({
         </Group>
         {research ? (
           <>
-            <Text size="sm">{research.summary}</Text>
-            <Stack gap={6}>
-              {research.guidelines.map(guideline => (
-                <Text key={guideline} c="dimmed" size="sm">
-                  {guideline}
-                </Text>
-              ))}
-            </Stack>
             <Group gap="xs">
-              {research.sources.map(source => (
-                <Badge key={source.url} color="violet" radius="sm" variant="outline">
-                  {source.title}
+              <Badge color="violet" radius="sm" variant="light">
+                {research.guidelines.length} Guidelines
+              </Badge>
+              <Badge color="gray" radius="sm" variant="light">
+                {research.sources.length} Sources
+              </Badge>
+              {research.warnings.length > 0 ? (
+                <Badge color="yellow" radius="sm" variant="light">
+                  {research.warnings.length} Warnings
                 </Badge>
-              ))}
+              ) : null}
             </Group>
-            {research.warnings.length > 0 ? (
-              <Stack gap={4}>
-                {research.warnings.map((warning, index) => (
-                  <Text key={`${warning.provider}-${warning.stage}-${index}`} c="yellow" size="xs">
-                    Demo fallback: {warning.provider} {warning.stage} - {warning.message}
-                  </Text>
-                ))}
-              </Stack>
-            ) : null}
+            <Text lineClamp={2} size="sm" style={{ overflowWrap: "anywhere" }}>
+              {research.summary}
+            </Text>
+            <Button
+              color="violet"
+              onClick={() =>
+                onOpenDetail({
+                  title,
+                  rows: [
+                    { label: "Summary", value: research.summary },
+                    { label: "Guidelines", value: research.guidelines.join("\n") || "No guidelines" },
+                    {
+                      label: "Sources",
+                      value:
+                        research.sources.map(source => `${source.title}\n${source.url}\n${source.excerpt}`).join("\n\n") ||
+                        "No sources",
+                    },
+                    {
+                      label: "Warnings",
+                      value:
+                        research.warnings
+                          .map(warning => `${warning.provider} ${warning.stage}: ${warning.message}`)
+                          .join("\n") || "No warnings",
+                    },
+                  ],
+                })
+              }
+              size="compact-sm"
+              variant="light"
+              w="fit-content"
+            >
+              View Details
+            </Button>
           </>
         ) : (
           <Text c="dimmed" size="sm">
@@ -1361,7 +1579,7 @@ function ResearchPanel({
           </Text>
         )}
       </Stack>
-    </PaperPanel>
+    </CompactPanel>
   );
 }
 
@@ -1401,6 +1619,7 @@ function PosSuggestionsTable({
   loading,
   working,
   onGenerate,
+  onOpenDetail,
   onReview,
   onTokenChange,
 }: {
@@ -1409,6 +1628,7 @@ function PosSuggestionsTable({
   loading: boolean;
   working: boolean;
   onGenerate: () => void;
+  onOpenDetail: (detail: DetailContent) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
   onTokenChange: (suggestionId: string, tokenIndex: number, tag: string | null) => void;
 }) {
@@ -1419,10 +1639,26 @@ function PosSuggestionsTable({
       columnHelper.accessor("original_text", {
         header: "Text",
         cell: info => (
-          <Box maw={360}>
-            <Text fw={700} size="sm">
-              {info.getValue()}
-            </Text>
+          <Box maw={260} miw={180}>
+            <PreviewTextButton
+              text={info.getValue()}
+              title="POS Text"
+              onOpen={() => {
+                const suggestion = info.row.original;
+                const tokens = tokenDrafts[suggestion.id] ?? suggestion.tokens;
+                onOpenDetail({
+                  title: "POS Suggestion",
+                  rows: [
+                    { label: "Text", value: suggestion.original_text },
+                    { label: "Status", value: suggestion.status },
+                    { label: "Confidence", value: formatPercent(suggestion.confidence) },
+                    { label: "Rationale", value: suggestion.rationale || "No rationale" },
+                    { label: "Tokens", value: formatTokenDetails(tokens) },
+                    { label: "Suggestion ID", value: suggestion.id },
+                  ],
+                });
+              }}
+            />
             <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
               {info.row.original.status}
             </Badge>
@@ -1437,8 +1673,8 @@ function PosSuggestionsTable({
           const tokens = tokenDrafts[suggestion.id] ?? suggestion.tokens;
 
           return (
-            <Stack gap={6} miw={260}>
-              {tokens.map(token => (
+            <Stack gap={6} miw={220}>
+              {tokens.slice(0, 8).map(token => (
                 <Group key={`${suggestion.id}-${token.index}`} gap={6} wrap="nowrap">
                   <Badge color="gray" radius="sm" variant="light">
                     {token.token}
@@ -1454,6 +1690,25 @@ function PosSuggestionsTable({
                   />
                 </Group>
               ))}
+              {tokens.length > 8 ? (
+                <Button
+                  color="gray"
+                  onClick={() =>
+                    onOpenDetail({
+                      title: "POS Tokens",
+                      rows: [
+                        { label: "Text", value: suggestion.original_text },
+                        { label: "Tokens", value: formatTokenDetails(tokens) },
+                      ],
+                    })
+                  }
+                  size="compact-xs"
+                  variant="subtle"
+                  w="fit-content"
+                >
+                  View {tokens.length - 8} More
+                </Button>
+              ) : null}
             </Stack>
           );
         },
@@ -1483,7 +1738,7 @@ function PosSuggestionsTable({
         },
       }),
     ];
-  }, [onReview, onTokenChange, tokenDrafts, working]);
+  }, [onOpenDetail, onReview, onTokenChange, tokenDrafts, working]);
 
   const table = useReactTable({
     columns,
@@ -1634,6 +1889,7 @@ function OcrSuggestionsTable({
   drafts,
   loading,
   working,
+  onOpenDetail,
   onRunOcr,
   onDraftChange,
   onReview,
@@ -1643,6 +1899,7 @@ function OcrSuggestionsTable({
   drafts: TextDraftMap;
   loading: boolean;
   working: boolean;
+  onOpenDetail: (detail: DetailContent) => void;
   onRunOcr: () => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
@@ -1654,10 +1911,25 @@ function OcrSuggestionsTable({
       columnHelper.accessor("original_text", {
         header: "Image/PDF",
         cell: info => (
-          <Box maw={260}>
-            <Text fw={700} size="sm" truncate="end">
-              {info.getValue()}
-            </Text>
+          <Box maw={220} miw={160}>
+            <PreviewTextButton
+              text={info.getValue()}
+              title="OCR Source"
+              onOpen={() => {
+                const suggestion = info.row.original;
+                onOpenDetail({
+                  title: "OCR Suggestion",
+                  rows: [
+                    { label: "Source", value: suggestion.original_text },
+                    { label: "OCR Text", value: drafts[suggestion.id] ?? suggestion.suggested_text ?? "No OCR text" },
+                    { label: "Status", value: suggestion.status },
+                    { label: "Confidence", value: formatPercent(suggestion.confidence) },
+                    { label: "Rationale", value: suggestion.rationale || "No rationale" },
+                    { label: "Suggestion ID", value: suggestion.id },
+                  ],
+                });
+              }}
+            />
             <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
               {info.row.original.status}
             </Badge>
@@ -1675,11 +1947,12 @@ function OcrSuggestionsTable({
               aria-label={`OCR text for ${suggestion.original_text}`}
               autoComplete="off"
               autosize
+              maxRows={3}
               minRows={3}
               name={`ocr-${suggestion.id}`}
               onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
               value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
-              w={320}
+              w={300}
             />
           );
         },
@@ -1704,7 +1977,7 @@ function OcrSuggestionsTable({
         },
       }),
     ];
-  }, [drafts, onDraftChange, onReview, working]);
+  }, [drafts, onDraftChange, onOpenDetail, onReview, working]);
 
   const table = useReactTable({
     columns,
@@ -1775,6 +2048,7 @@ function TranslationTable({
   loading,
   working,
   onGenerate,
+  onOpenDetail,
   onDraftChange,
   onReview,
 }: {
@@ -1785,6 +2059,7 @@ function TranslationTable({
   loading: boolean;
   working: boolean;
   onGenerate: () => void;
+  onOpenDetail: (detail: DetailContent) => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
 }) {
@@ -1796,18 +2071,49 @@ function TranslationTable({
         id: "text",
         header: "Text",
         cell: info => (
-          <Text fw={700} size="sm">
-            {info.getValue() || "No source text"}
-          </Text>
+          <Box maw={260} miw={180}>
+            <PreviewTextButton
+              text={info.getValue()}
+              title="Source Text"
+              onOpen={() => {
+                const label = info.row.original;
+                onOpenDetail({
+                  title: "Translation Label",
+                  rows: [
+                    { label: "Source Text", value: label.data_text ?? "No source text" },
+                    { label: "Translation", value: translationValue(label) },
+                    { label: "Source", value: label.source },
+                    { label: "Label ID", value: label.id },
+                  ],
+                });
+              }}
+            />
+          </Box>
         ),
       }),
       columnHelper.accessor(row => translationValue(row), {
         id: "translation",
         header: "Translation",
         cell: info => (
-          <Text size="sm">
-            {info.getValue()}
-          </Text>
+          <Box maw={280} miw={180}>
+            <PreviewTextButton
+              fw={500}
+              text={info.getValue()}
+              title="Translation"
+              onOpen={() => {
+                const label = info.row.original;
+                onOpenDetail({
+                  title: "Translation Label",
+                  rows: [
+                    { label: "Source Text", value: label.data_text ?? "No source text" },
+                    { label: "Translation", value: translationValue(label) },
+                    { label: "Source", value: label.source },
+                    { label: "Label ID", value: label.id },
+                  ],
+                });
+              }}
+            />
+          </Box>
         ),
       }),
       columnHelper.accessor("source", {
@@ -1819,7 +2125,7 @@ function TranslationTable({
         ),
       }),
     ];
-  }, []);
+  }, [onOpenDetail]);
 
   const suggestionColumns = useMemo(() => {
     const columnHelper = createColumnHelper<Suggestion>();
@@ -1828,10 +2134,25 @@ function TranslationTable({
       columnHelper.accessor("original_text", {
         header: "Text",
         cell: info => (
-          <Box maw={320}>
-            <Text fw={700} size="sm">
-              {info.getValue()}
-            </Text>
+          <Box maw={260} miw={180}>
+            <PreviewTextButton
+              text={info.getValue()}
+              title="Translation Source"
+              onOpen={() => {
+                const suggestion = info.row.original;
+                onOpenDetail({
+                  title: "Translation Suggestion",
+                  rows: [
+                    { label: "Source Text", value: suggestion.original_text },
+                    { label: "Suggested Translation", value: drafts[suggestion.id] ?? suggestion.suggested_text ?? "" },
+                    { label: "Status", value: suggestion.status },
+                    { label: "Confidence", value: formatPercent(suggestion.confidence) },
+                    { label: "Rationale", value: suggestion.rationale || "No rationale" },
+                    { label: "Suggestion ID", value: suggestion.id },
+                  ],
+                });
+              }}
+            />
             <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
               {info.row.original.status}
             </Badge>
@@ -1848,11 +2169,12 @@ function TranslationTable({
               aria-label={`Translation for ${suggestion.original_text}`}
               autoComplete="off"
               autosize
+              maxRows={3}
               minRows={2}
               name={`translation-${suggestion.id}`}
               onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
               value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
-              w={360}
+              w={320}
             />
           );
         },
@@ -1881,7 +2203,7 @@ function TranslationTable({
         },
       }),
     ];
-  }, [drafts, onDraftChange, onReview, working]);
+  }, [drafts, onDraftChange, onOpenDetail, onReview, working]);
 
   const labelTable = useReactTable({
     columns: labelColumns,
@@ -2097,27 +2419,33 @@ function jobWarnings(job: Job): ProviderWarning[] {
 }
 
 function JobsPanel({ jobs }: { jobs: Job[] }) {
-  if (jobs.length === 0) return null;
+  const visibleJobs = jobs.slice(0, 3);
   return (
-    <PaperPanel title="Recent jobs" eyebrow="Polling-compatible status">
-      <SimpleGrid cols={{ base: 1, md: 3 }} spacing="sm">
-        {jobs.map(job => {
+    <CompactPanel title="Recent Jobs" eyebrow="Last 3 runs">
+      {visibleJobs.length === 0 ? (
+        <Text c="dimmed" size="sm">
+          No recent jobs.
+        </Text>
+      ) : (
+        <Stack gap="xs">
+          {visibleJobs.map((job, index) => {
           const warnings = jobWarnings(job);
           const usedFallback = job.metadata["used_fallback"] === true || warnings.length > 0;
 
           return (
-            <Card key={job.id} withBorder radius="md" p="sm" style={{ background: UI.panelSoft, borderColor: UI.border }}>
-              <Stack gap={6}>
+            <Box key={job.id}>
+              {index > 0 ? <Divider mb="xs" /> : null}
+              <Stack gap={4}>
                 <Group justify="space-between" wrap="nowrap">
-                  <Box>
-                    <Text fw={700} size="sm">
+                  <Box miw={0}>
+                    <Text fw={700} size="sm" truncate="end">
                       {job.type}
                     </Text>
-                    <Text c="dimmed" size="xs">
+                    <Text c="dimmed" size="xs" truncate="end">
                       {job.message || job.id}
                     </Text>
                   </Box>
-                  <Badge color={statusColor(job.status)} radius="sm" variant="dot">
+                  <Badge color={statusColor(job.status)} radius="sm" variant="dot" style={{ flexShrink: 0 }}>
                     {job.status}
                   </Badge>
                 </Group>
@@ -2132,11 +2460,12 @@ function JobsPanel({ jobs }: { jobs: Job[] }) {
                   </Text>
                 ))}
               </Stack>
-            </Card>
+            </Box>
           );
         })}
-      </SimpleGrid>
-    </PaperPanel>
+        </Stack>
+      )}
+    </CompactPanel>
   );
 }
 
