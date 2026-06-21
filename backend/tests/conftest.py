@@ -18,14 +18,6 @@ from app.config import Settings
 
 settings = Settings(_env_file=None)
 
-collect_ignore = [
-    "test_browserbase_tool.py",
-    "test_data_agent.py",
-    "test_data_service.py",
-    "test_research_agent.py",
-    "test_research_service.py",
-]
-
 
 @pytest.fixture
 def session():
