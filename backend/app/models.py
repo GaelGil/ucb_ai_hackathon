@@ -24,6 +24,12 @@ class SourceType(StrEnum):
     IMAGE = "image"
 
 
+class ImportKind(StrEnum):
+    GENERIC = "generic"
+    TRANSLATION = "translation"
+    POS = "pos"
+
+
 class SuggestionType(StrEnum):
     POS = "pos"
     OCR = "ocr"
@@ -63,6 +69,13 @@ class PosModelStatus(StrEnum):
     TRAINING = "training"
     READY = "ready"
     FAILED = "failed"
+
+
+class ProviderWarning(BaseModel):
+    provider: str
+    stage: str
+    message: str
+    fallback: bool = True
 
 
 UPOS_TAGS = {
@@ -137,6 +150,7 @@ class Label(BaseModel):
     id: str = Field(default_factory=lambda: new_id("label"))
     dataset_id: str
     data_row_id: str
+    data_text: str | None = None
     import_id: str | None = None
     ai_suggestion_id: str | None = None
     type: SuggestionType
@@ -157,9 +171,11 @@ class ResearchArtifact(BaseModel):
     id: str = Field(default_factory=lambda: new_id("research"))
     dataset_id: str
     language_code: str
+    type: str = "pos"
     summary: str
     guidelines: list[str] = Field(default_factory=list)
     sources: list[ResearchSource] = Field(default_factory=list)
+    warnings: list[ProviderWarning] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -211,6 +227,10 @@ class PosSuggestionRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=5)
 
 
+class TranslationSuggestionRequest(BaseModel):
+    limit: int = Field(default=5, ge=1, le=20)
+
+
 class OcrRequest(BaseModel):
     import_id: str | None = None
 
@@ -220,11 +240,21 @@ class TranslationRequest(BaseModel):
     direction: str = "spanish_to_nahuatl"
 
 
+class TranslationProviderResult(BaseModel):
+    output_text: str
+    provider: str
+    model: str
+    used_fallback: bool = False
+    warning: ProviderWarning | None = None
+
+
 class TranslationResponse(BaseModel):
     input_text: str
     output_text: str
     provider: str
     model: str
+    used_fallback: bool = False
+    warning: ProviderWarning | None = None
 
 
 class PosTrainingRequest(BaseModel):
@@ -235,6 +265,8 @@ class PosTrainingRequest(BaseModel):
 class PosModelState(BaseModel):
     dataset_id: str
     status: PosModelStatus = PosModelStatus.NOT_STARTED
+    mode: str = "real"
+    minimum_examples_met: bool = False
     accepted_sentence_count: int = 0
     minimum_examples: int = 20
     metrics: dict[str, float] = Field(default_factory=dict)

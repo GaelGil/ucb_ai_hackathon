@@ -68,6 +68,8 @@ NAHUATL_MODEL_ENDPOINT_URL=https://your-neuron-endpoint/invoke
 NAHUATL_MODEL_NAME=somosnlp-hackathon-2022/t5-small-spanish-nahuatl
 ```
 
+For demo reliability, missing or failing external providers fall back to local demo behavior. Those fallbacks are recorded in job metadata and API warning fields so the UI can distinguish demo output from successful integrations.
+
 Use a SQLAlchemy/psycopg2 URL from Supabase, for example:
 
 ```bash

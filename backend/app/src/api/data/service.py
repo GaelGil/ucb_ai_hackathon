@@ -42,15 +42,19 @@ class DataService:
         source_type: api.SourceType,
         filename: str | None = None,
         column_mapping: dict[str, Any] | None = None,
+        import_kind: api.ImportKind = api.ImportKind.GENERIC,
     ) -> tuple[api.ImportRecord, api.Job, list[api.TextItem], list[api.Label]]:
         dataset = self._get_dataset(dataset_id)
         db_source_type = source_type_to_db(source_type)
+        record_mapping = dict(column_mapping or {})
+        if import_kind != api.ImportKind.GENERIC:
+            record_mapping["import_kind"] = import_kind.value
         record = ImportRecord(
             dataset_id=dataset.id,
             source_type=db_source_type,
             status=ImportStatus.processing,
             filename=filename,
-            column_mapping=column_mapping or {},
+            column_mapping=record_mapping,
         )
         self.session.add(record)
         self.session.commit()
@@ -60,8 +64,17 @@ class DataService:
 
         def callback(job: api.Job) -> dict:
             del job
+            stats: dict[str, Any] = {"import_kind": import_kind.value, "skipped_count": 0}
+            if import_kind != api.ImportKind.GENERIC and db_source_type != DataSourceType.csv:
+                raise ValueError(f"{import_kind.value} imports require CSV source_type.")
             if db_source_type == DataSourceType.csv:
-                rows, labels = self._create_csv_rows(dataset.id, record.id, text, record.column_mapping)
+                rows, labels, stats = self._create_csv_rows(
+                    dataset.id,
+                    record.id,
+                    text,
+                    record.column_mapping,
+                    import_kind,
+                )
                 created_rows.extend(rows)
                 created_labels.extend(labels)
             else:
@@ -91,9 +104,16 @@ class DataService:
                 "import_id": record.id,
                 "item_count": len(created_rows),
                 "label_count": len(created_labels),
+                **stats,
             }
 
         job = self.jobs.run("import", callback)
+        if job.status == api.JobStatus.FAILED:
+            record.status = ImportStatus.failed
+            record.error = job.error
+            self.session.add(record)
+            self.session.commit()
+            self.session.refresh(record)
         return import_to_api(record), job, [data_row_to_text_item(row) for row in created_rows], [
             label_to_api(label) for label in created_labels
         ]
@@ -206,20 +226,36 @@ class DataService:
         import_id: str,
         text: str,
         column_mapping: dict[str, Any],
-    ) -> tuple[list[DataRow], list[Label]]:
+        import_kind: api.ImportKind,
+    ) -> tuple[list[DataRow], list[Label], dict[str, Any]]:
         reader = csv.DictReader(StringIO(text))
-        rows = [row for row in reader if any((value or "").strip() for value in row.values())]
-        if not rows:
-            return self._create_plain_csv_rows(dataset_id, import_id, text)
+        headers = [header.strip() for header in reader.fieldnames or [] if header is not None]
+        raw_rows = [self._normalized_csv_row(row) for row in reader]
 
-        headers = list(rows[0].keys())
+        if import_kind == api.ImportKind.TRANSLATION:
+            return self._create_translation_csv_rows(dataset_id, import_id, headers, raw_rows)
+        if import_kind == api.ImportKind.POS:
+            return self._create_pos_csv_rows(dataset_id, import_id, headers, raw_rows)
+
+        rows = [row for row in raw_rows if any((value or "").strip() for value in row.values())]
+        if not rows:
+            created_rows, created_labels = self._create_plain_csv_rows(dataset_id, import_id, text)
+            return created_rows, created_labels, {
+                "import_kind": import_kind.value,
+                "created_count": len(created_rows),
+                "label_count": len(created_labels),
+                "skipped_count": 0,
+            }
+
         text_column = self._text_column(headers, column_mapping)
         label_columns = self._label_columns(headers, text_column, column_mapping)
         created_rows: list[DataRow] = []
         created_labels: list[Label] = []
+        skipped_count = 0
         for index, csv_row in enumerate(rows):
             text_value = (csv_row.get(text_column) or "").strip() if text_column else self._first_value(csv_row)
             if not text_value:
+                skipped_count += 1
                 continue
             row = DataRow(
                 dataset_id=dataset_id,
@@ -248,7 +284,115 @@ class DataService:
                 )
                 self.session.add(label)
                 created_labels.append(label)
-        return created_rows, created_labels
+        return created_rows, created_labels, {
+            "import_kind": import_kind.value,
+            "created_count": len(created_rows),
+            "label_count": len(created_labels),
+            "skipped_count": skipped_count,
+        }
+
+    def _create_translation_csv_rows(
+        self,
+        dataset_id: str,
+        import_id: str,
+        headers: list[str],
+        rows: list[dict[str, str]],
+    ) -> tuple[list[DataRow], list[Label], dict[str, Any]]:
+        required = ["text", "translation", "source", "src", "target"]
+        self._require_csv_headers(headers, required, "Translation")
+        created_rows: list[DataRow] = []
+        created_labels: list[Label] = []
+        skipped_count = 0
+        for index, csv_row in enumerate(rows):
+            text_value = (csv_row.get("text") or "").strip()
+            translation = (csv_row.get("translation") or "").strip()
+            if not text_value or not translation:
+                skipped_count += 1
+                continue
+            row = DataRow(
+                dataset_id=dataset_id,
+                import_id=import_id,
+                row_index=index,
+                source_type=DataSourceType.csv,
+                text_content=text_value,
+                row_metadata={"csv": csv_row},
+            )
+            self.session.add(row)
+            self.session.flush()
+            created_rows.append(row)
+            label = Label(
+                dataset_id=dataset_id,
+                data_row_id=row.id,
+                import_id=import_id,
+                type=LabelType.translation,
+                name="translation",
+                value={
+                    "text": translation,
+                    "source": (csv_row.get("source") or "").strip(),
+                    "src": (csv_row.get("src") or "").strip(),
+                    "target": (csv_row.get("target") or "").strip(),
+                },
+                source=LabelSource.csv_import,
+                original_column_name="translation",
+            )
+            self.session.add(label)
+            created_labels.append(label)
+        return created_rows, created_labels, {
+            "import_kind": api.ImportKind.TRANSLATION.value,
+            "created_count": len(created_rows),
+            "label_count": len(created_labels),
+            "skipped_count": skipped_count,
+        }
+
+    def _create_pos_csv_rows(
+        self,
+        dataset_id: str,
+        import_id: str,
+        headers: list[str],
+        rows: list[dict[str, str]],
+    ) -> tuple[list[DataRow], list[Label], dict[str, Any]]:
+        required = ["text", "tags"]
+        self._require_csv_headers(headers, required, "POS")
+        created_rows: list[DataRow] = []
+        created_labels: list[Label] = []
+        skipped_count = 0
+        for index, csv_row in enumerate(rows):
+            text_value = (csv_row.get("text") or "").strip()
+            tags_value = self._normalized_pos_tags(csv_row.get("tags") or "")
+            tokens = text_value.split()
+            tags = tags_value.split()
+            if not text_value or not tags_value or len(tokens) != len(tags) or any(tag not in api.UPOS_TAGS for tag in tags):
+                skipped_count += 1
+                continue
+            row = DataRow(
+                dataset_id=dataset_id,
+                import_id=import_id,
+                row_index=index,
+                source_type=DataSourceType.csv,
+                text_content=text_value,
+                row_metadata={"csv": csv_row},
+            )
+            self.session.add(row)
+            self.session.flush()
+            created_rows.append(row)
+            label = Label(
+                dataset_id=dataset_id,
+                data_row_id=row.id,
+                import_id=import_id,
+                type=LabelType.pos,
+                name="tags",
+                value={"tags": tags_value},
+                source=LabelSource.csv_import,
+                original_column_name="tags",
+            )
+            self.session.add(label)
+            created_labels.append(label)
+        return created_rows, created_labels, {
+            "import_kind": api.ImportKind.POS.value,
+            "created_count": len(created_rows),
+            "label_count": len(created_labels),
+            "skipped_count": skipped_count,
+        }
 
     def _create_plain_csv_rows(self, dataset_id: str, import_id: str, text: str) -> tuple[list[DataRow], list[Label]]:
         created: list[DataRow] = []
@@ -266,6 +410,26 @@ class DataService:
             self.session.add(data_row)
             created.append(data_row)
         return created, []
+
+    def _normalized_csv_row(self, row: dict[str | None, str | None]) -> dict[str, str]:
+        return {str(key).strip(): str(value or "") for key, value in row.items() if key is not None}
+
+    def _require_csv_headers(self, headers: list[str], required: list[str], label: str) -> None:
+        missing = [header for header in required if header not in headers]
+        if missing:
+            raise ValueError(
+                f"{label} CSV requires columns: {','.join(required)}. Missing columns: {','.join(missing)}."
+            )
+
+    def _normalized_pos_tags(self, raw_value: str) -> str:
+        value = raw_value.strip()
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = value
+        if isinstance(parsed, list):
+            value = " ".join(str(item).strip() for item in parsed if str(item).strip())
+        return " ".join(tag.upper() for tag in value.split())
 
     def _text_column(self, headers: list[str], column_mapping: dict[str, Any]) -> str | None:
         explicit = column_mapping.get("text") or column_mapping.get("text_column")
@@ -325,7 +489,7 @@ class DataService:
         if isinstance(parsed, dict):
             return parsed
         if label_type == LabelType.pos and isinstance(parsed, list):
-            return {"tokens": parsed}
+            return {"tags": self._normalized_pos_tags(json.dumps(parsed))}
         return {"text": str(parsed)}
 
     def _first_value(self, row: dict[str, str]) -> str:

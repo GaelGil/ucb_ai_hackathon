@@ -30,6 +30,26 @@ class JobRunner:
         self.session.refresh(job)
         return job_to_api(job)
 
+    def create_failed(
+        self,
+        job_type: str,
+        error: str,
+        metadata: dict | None = None,
+        message: str = "Failed",
+    ) -> Job:
+        job = DbJob(
+            type=job_type,
+            status=DbJobStatus.failed,
+            progress=100,
+            message=message,
+            error=error,
+            job_metadata=metadata or {},
+        )
+        self.session.add(job)
+        self.session.commit()
+        self.session.refresh(job)
+        return job_to_api(job)
+
     def run(self, job_type: str, callback: Callable[[Job], dict | None]) -> Job:
         db_job = DbJob(type=job_type, status=DbJobStatus.running, progress=5, message="Started")
         self.session.add(db_job)

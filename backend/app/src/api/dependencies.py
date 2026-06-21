@@ -66,6 +66,7 @@ def get_labels_service(request: Request, session: Session = Depends(get_db_sessi
     return LabelsService(
         session=session,
         pos_provider=services.pos_provider,
+        translation_provider=services.translation_provider,
         research_service=research,
         jobs=jobs,
     )

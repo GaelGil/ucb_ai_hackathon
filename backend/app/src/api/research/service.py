@@ -35,9 +35,17 @@ class ResearchService:
         existing = self._get_research_row(dataset.language_id, research_type)
         if existing is not None and not force:
             api_research = research_to_api(dataset, dataset.language, existing)
+            warnings = existing.research_metadata.get("warnings", [])
             job = self.jobs.create_succeeded(
                 "research",
-                metadata={"dataset_id": dataset.id, "research_id": existing.id, "cached": True},
+                metadata={
+                    "dataset_id": dataset.id,
+                    "research_id": existing.id,
+                    "research_type": research_type.value,
+                    "cached": True,
+                    "used_fallback": bool(warnings),
+                    "warnings": warnings,
+                },
                 message="Using cached research",
             )
             return api_research, job
@@ -54,17 +62,40 @@ class ResearchService:
                 if row.text_content
             ]
             with self.tracer.span("research.create", dataset_id=dataset.id, language=dataset.language.code):
-                artifact = self.research_provider.create_research(dataset_to_api(dataset), samples)
+                artifact = self.research_provider.create_research(dataset_to_api(dataset), samples, research_type.value)
+            warnings = [warning.model_dump(mode="json") for warning in artifact.warnings]
+            if warnings:
+                with self.tracer.span(
+                    "provider.fallback",
+                    dataset_id=dataset.id,
+                    provider=warnings[0].get("provider"),
+                    stage=warnings[0].get("stage"),
+                    research_type=research_type.value,
+                ):
+                    pass
 
             row = existing or Research(language_id=dataset.language_id, type=research_type)
             row.notes = artifact.summary
             row.sources = [source.model_dump() for source in artifact.sources]
-            row.research_metadata = {"guidelines": artifact.guidelines, "dataset_id": dataset.id}
+            row.research_metadata = {
+                "guidelines": artifact.guidelines,
+                "dataset_id": dataset.id,
+                "research_type": research_type.value,
+                "used_fallback": bool(warnings),
+                "warnings": warnings,
+            }
             self.session.add(row)
             self.session.commit()
             self.session.refresh(row)
             research_holder["row"] = row
-            return {"dataset_id": dataset.id, "research_id": row.id, "cached": False}
+            return {
+                "dataset_id": dataset.id,
+                "research_id": row.id,
+                "research_type": research_type.value,
+                "cached": False,
+                "used_fallback": bool(warnings),
+                "warnings": warnings,
+            }
 
         job = self.jobs.run("research", callback)
         row = research_holder.get("row")

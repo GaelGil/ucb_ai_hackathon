@@ -30,6 +30,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -43,7 +44,11 @@ import {
   TbWand,
 } from "react-icons/tb";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const configuredApiBaseUrl =
+  typeof process !== "undefined" ? process.env.BUN_PUBLIC_API_BASE_URL?.replace(/\/$/, "") : "";
+const isLocalBrowser =
+  typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const API_BASE_URL = configuredApiBaseUrl || (isLocalBrowser ? "http://127.0.0.1:8000" : "");
 
 const UPOS_TAGS = [
   "ADJ",
@@ -78,8 +83,18 @@ const SIDEBAR_WIDTH = 304;
 const SIDEBAR_COLLAPSED_WIDTH = 84;
 
 type SourceType = "text" | "csv" | "txt" | "pdf" | "image";
-type SuggestionType = "pos" | "ocr";
-type SuggestionStatus = "pending" | "approved" | "denied" | "edited";
+type ImportKind = "generic" | "translation" | "pos";
+type ResearchType = "pos" | "translation";
+type SuggestionType = "pos" | "ocr" | "translation" | "emotion" | "intention" | "text" | "custom";
+type SuggestionStatus = "pending" | "accepted" | "denied" | "updated" | "approved" | "edited";
+type LabelSource = "csv_import" | "human" | "ai_accepted" | "ai_updated";
+
+type ProviderWarning = {
+  provider: string;
+  stage: string;
+  message: string;
+  fallback: boolean;
+};
 
 type Dataset = {
   id: string;
@@ -95,15 +110,19 @@ type ImportRecord = {
   filename: string | null;
   item_count: number;
   asset_count: number;
+  label_count: number;
   status: string;
+  column_mapping: Record<string, unknown>;
   created_at: string;
 };
 
 type ResearchArtifact = {
   id: string;
+  type: ResearchType;
   summary: string;
   guidelines: string[];
   sources: { title: string; url: string; excerpt: string }[];
+  warnings: ProviderWarning[];
 };
 
 type TokenSuggestion = {
@@ -125,8 +144,25 @@ type Suggestion = {
   rationale: string;
 };
 
+type Label = {
+  id: string;
+  dataset_id: string;
+  data_row_id: string;
+  data_text: string | null;
+  import_id: string | null;
+  ai_suggestion_id: string | null;
+  type: SuggestionType;
+  name: string | null;
+  value: Record<string, unknown>;
+  source: LabelSource;
+  original_column_name: string | null;
+  created_at: string;
+};
+
 type PosModel = {
   status: string;
+  mode: "demo" | "real";
+  minimum_examples_met: boolean;
   accepted_sentence_count: number;
   minimum_examples: number;
   model_name: string | null;
@@ -149,6 +185,7 @@ type Job = {
   progress: number;
   message: string;
   error: string | null;
+  metadata: Record<string, unknown>;
 };
 
 type Toast = {
@@ -160,38 +197,18 @@ type DraftMap = Record<string, TokenSuggestion[]>;
 type TextDraftMap = Record<string, string>;
 type WorkspaceTab = "pos" | "ocr" | "translate" | "upload" | "models";
 
-type TranslationRow = {
-  id: string;
-  text: string;
-  translation: string;
-  suggestions: string[];
-};
-
-const TRANSLATION_ROWS: TranslationRow[] = [
-  {
-    id: "translation-flowers",
-    text: "muchas flores son blancas",
-    translation: "miak xochitl istak",
-    suggestions: ["Confirm plural agreement", "Review color adjective placement"],
-  },
-  {
-    id: "translation-water",
-    text: "el agua corre rapido",
-    translation: "atl motlaloa niman",
-    suggestions: ["Check tense marker", "Verify natural word order"],
-  },
-  {
-    id: "translation-family",
-    text: "mi familia habla nahuatl",
-    translation: "nochan tlatoa nahuatl",
-    suggestions: ["Validate possessive form", "Flag dialect-specific vocabulary"],
-  },
-];
+const EMPTY_DATASETS: Dataset[] = [];
+const EMPTY_SUGGESTIONS: Suggestion[] = [];
+const EMPTY_LABELS: Label[] = [];
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = new Headers(options?.headers);
+  if (options?.body !== undefined && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: options?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
     ...options,
+    headers: headers.entries().next().done ? undefined : headers,
   });
   if (!response.ok) {
     const message = await response.text();
@@ -201,6 +218,110 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     return undefined as T;
   }
   return response.json() as Promise<T>;
+}
+
+async function optionalApi<T>(path: string, options?: RequestInit): Promise<T | null> {
+  const response = await fetch(`${API_BASE_URL}${path}`, options);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed with ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+const queryKeys = {
+  datasets: ["datasets"] as const,
+  workspace: (datasetId: string) => ["workspace", datasetId] as const,
+  dashboard: (datasetId: string) => [...queryKeys.workspace(datasetId), "dashboard"] as const,
+  suggestions: (datasetId: string, type: SuggestionType, status: SuggestionStatus, limit: number) =>
+    [...queryKeys.workspace(datasetId), "suggestions", type, status, limit] as const,
+  labels: (datasetId: string, type: SuggestionType, limit: number) =>
+    [...queryKeys.workspace(datasetId), "labels", type, limit] as const,
+  research: (datasetId: string, type: ResearchType) => [...queryKeys.workspace(datasetId), "research", type] as const,
+};
+
+function useDatasets() {
+  return useQuery({
+    queryKey: queryKeys.datasets,
+    queryFn: ({ signal }) => api<Dataset[]>("/datasets", { signal }),
+  });
+}
+
+function useWorkspaceData(datasetId: string) {
+  const enabled = datasetId.length > 0;
+  const dashboardQuery = useQuery({
+    queryKey: queryKeys.dashboard(datasetId),
+    queryFn: ({ signal }) => api<Dashboard>(`/datasets/${datasetId}/dashboard`, { signal }),
+    enabled,
+  });
+  const posSuggestionsQuery = useQuery({
+    queryKey: queryKeys.suggestions(datasetId, "pos", "pending", 5),
+    queryFn: ({ signal }) =>
+      api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`, {
+        signal,
+      }),
+    enabled,
+  });
+  const ocrSuggestionsQuery = useQuery({
+    queryKey: queryKeys.suggestions(datasetId, "ocr", "pending", 5),
+    queryFn: ({ signal }) =>
+      api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`, {
+        signal,
+      }),
+    enabled,
+  });
+  const translationSuggestionsQuery = useQuery({
+    queryKey: queryKeys.suggestions(datasetId, "translation", "pending", 5),
+    queryFn: ({ signal }) =>
+      api<{ suggestions: Suggestion[] }>(
+        `/datasets/${datasetId}/suggestions?type=translation&status=pending&limit=5`,
+        { signal },
+      ),
+    enabled,
+  });
+  const translationLabelsQuery = useQuery({
+    queryKey: queryKeys.labels(datasetId, "translation", 500),
+    queryFn: ({ signal }) => api<{ labels: Label[] }>(`/datasets/${datasetId}/labels?type=translation&limit=500`, { signal }),
+    enabled,
+  });
+  const posResearchQuery = useQuery({
+    queryKey: queryKeys.research(datasetId, "pos"),
+    queryFn: ({ signal }) => optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=pos`, { signal }),
+    enabled,
+  });
+  const translationResearchQuery = useQuery({
+    queryKey: queryKeys.research(datasetId, "translation"),
+    queryFn: ({ signal }) =>
+      optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=translation`, { signal }),
+    enabled,
+  });
+  const queries = [
+    dashboardQuery,
+    posSuggestionsQuery,
+    ocrSuggestionsQuery,
+    translationSuggestionsQuery,
+    translationLabelsQuery,
+    posResearchQuery,
+    translationResearchQuery,
+  ];
+
+  return {
+    dashboard: dashboardQuery.data ?? null,
+    posSuggestions: posSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    ocrSuggestions: ocrSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    translationSuggestions: translationSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    translationLabels: translationLabelsQuery.data?.labels ?? EMPTY_LABELS,
+    researchByType: {
+      pos: posResearchQuery.data ?? null,
+      translation: translationResearchQuery.data ?? null,
+    } satisfies Record<ResearchType, ResearchArtifact | null>,
+    isLoading: queries.some(query => query.isLoading),
+    isFetching: queries.some(query => query.isFetching),
+    error: queries.find(query => query.error)?.error ?? null,
+  };
 }
 
 function sourceColor(source: SourceType) {
@@ -219,10 +340,12 @@ function sourceColor(source: SourceType) {
 
 function statusColor(status: string) {
   switch (status) {
+    case "accepted":
     case "approved":
     case "ready":
     case "succeeded":
       return "green";
+    case "updated":
     case "edited":
     case "running":
       return "violet";
@@ -241,29 +364,68 @@ function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+const IMPORT_KIND_OPTIONS = [
+  { value: "generic", label: "Generic CSV" },
+  { value: "translation", label: "Translation labels" },
+  { value: "pos", label: "POS tags" },
+] satisfies { value: ImportKind; label: string }[];
+
+function csvFormatHint(importKind: ImportKind) {
+  if (importKind === "translation") {
+    return "Required columns: text,translation,source,src,target. Extra metadata columns are allowed.";
+  }
+  if (importKind === "pos") {
+    return "CSV columns: text,tags. Tags must be UPOS values matching text tokens.";
+  }
+  return "Generic CSV uses text as the sentence column and creates labels from other columns.";
+}
+
+function importSuccessMessage(base: string, job: Job) {
+  const skipped = Number(job.metadata.skipped_count ?? 0);
+  if (!Number.isFinite(skipped) || skipped <= 0) {
+    return base;
+  }
+  return `${base}; skipped ${skipped} row${skipped === 1 ? "" : "s"}`;
+}
+
+function assertJobSucceeded(job: Job) {
+  if (job.status === "failed") {
+    throw new Error(job.error || "Import failed");
+  }
+}
+
 export function App() {
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const queryClient = useQueryClient();
+  const datasetsQuery = useDatasets();
+  const datasets = datasetsQuery.data ?? EMPTY_DATASETS;
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [ocrSuggestions, setOcrSuggestions] = useState<Suggestion[]>([]);
+  const workspaceData = useWorkspaceData(selectedDatasetId);
+  const dashboard = workspaceData.dashboard;
+  const suggestions = workspaceData.posSuggestions;
+  const ocrSuggestions = workspaceData.ocrSuggestions;
+  const translationSuggestions = workspaceData.translationSuggestions;
+  const translationLabels = workspaceData.translationLabels;
+  const researchByType = workspaceData.researchByType;
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("pos");
+  const [activeResearchType, setActiveResearchType] = useState<ResearchType>("pos");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [addLanguageFormOpen, setAddLanguageFormOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
 
-  const [datasetName, setDatasetName] = useState("Nahuatl field notes");
-  const [languageCode, setLanguageCode] = useState("nah");
-  const [languageName, setLanguageName] = useState("Nahuatl");
-  const [manualText, setManualText] = useState("muchas flores son blancas\nel agua corre rapido");
+  const [datasetName, setDatasetName] = useState("");
+  const [languageCode, setLanguageCode] = useState("");
+  const [languageName, setLanguageName] = useState("");
+  const [manualText, setManualText] = useState("");
   const [manualSource, setManualSource] = useState<SourceType>("text");
+  const [manualImportKind, setManualImportKind] = useState<ImportKind>("generic");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [fileImportKind, setFileImportKind] = useState<ImportKind>("generic");
   const [tokenDrafts, setTokenDrafts] = useState<DraftMap>({});
   const [ocrDrafts, setOcrDrafts] = useState<TextDraftMap>({});
+  const [translationDrafts, setTranslationDrafts] = useState<TextDraftMap>({});
 
   const selectedDataset = useMemo(
     () => datasets.find(dataset => dataset.id === selectedDatasetId) ?? datasets[0] ?? null,
@@ -277,72 +439,89 @@ export function App() {
 
   const pendingPosCount = dashboard?.suggestion_counts["pos:pending"] ?? 0;
   const acceptedPosCount =
-    (dashboard?.suggestion_counts["pos:approved"] ?? 0) + (dashboard?.suggestion_counts["pos:edited"] ?? 0);
+    (dashboard?.suggestion_counts["pos:accepted"] ?? 0) +
+    (dashboard?.suggestion_counts["pos:updated"] ?? 0) +
+    (dashboard?.suggestion_counts["pos:approved"] ?? 0) +
+    (dashboard?.suggestion_counts["pos:edited"] ?? 0);
   const pendingOcrCount = dashboard?.suggestion_counts["ocr:pending"] ?? 0;
+  const uploadFileIsCsv = uploadFile?.name.toLowerCase().endsWith(".csv") ?? false;
+  const datasetsLoading = datasetsQuery.isLoading;
+  const workspaceLoading = workspaceData.isLoading;
 
   useEffect(() => {
-    void loadDatasets();
-  }, []);
+    if (!datasetsQuery.isSuccess) return;
+    setSelectedDatasetId(current =>
+      datasets.some(dataset => dataset.id === current) ? current : datasets[0]?.id || "",
+    );
+  }, [datasets, datasetsQuery.isSuccess]);
 
   useEffect(() => {
-    if (selectedDatasetId) {
-      void refreshWorkspace(selectedDatasetId);
-    } else {
+    if (!selectedDatasetId) {
       clearWorkspaceState();
     }
   }, [selectedDatasetId]);
 
-  async function loadDatasets() {
-    setLoading(true);
-    try {
-      const rows = await api<Dataset[]>("/datasets");
-      setDatasets(rows);
-      setSelectedDatasetId(current =>
-        rows.some(dataset => dataset.id === current) ? current : rows[0]?.id || "",
-      );
-    } catch (error) {
-      showError(error);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (datasetsQuery.error) {
+      showError(datasetsQuery.error);
     }
+  }, [datasetsQuery.error]);
+
+  useEffect(() => {
+    if (workspaceData.error) {
+      showError(workspaceData.error);
+    }
+  }, [workspaceData.error]);
+
+  useEffect(() => {
+    setTokenDrafts(previous => {
+      const next = { ...previous };
+      for (const suggestion of suggestions) {
+        next[suggestion.id] ??= suggestion.tokens;
+      }
+      return next;
+    });
+  }, [suggestions]);
+
+  useEffect(() => {
+    setOcrDrafts(previous => {
+      const next = { ...previous };
+      for (const suggestion of ocrSuggestions) {
+        next[suggestion.id] ??= suggestion.suggested_text ?? "";
+      }
+      return next;
+    });
+  }, [ocrSuggestions]);
+
+  useEffect(() => {
+    setTranslationDrafts(previous => {
+      const next = { ...previous };
+      for (const suggestion of translationSuggestions) {
+        next[suggestion.id] ??= suggestion.suggested_text ?? "";
+      }
+      return next;
+    });
+  }, [translationSuggestions]);
+
+  async function invalidateDatasets() {
+    await queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
   }
 
-  async function refreshWorkspace(datasetId = selectedDatasetId) {
+  async function invalidateWorkspace(datasetId = selectedDatasetId) {
     if (!datasetId) return;
-    try {
-      const [nextDashboard, nextSuggestions, nextOcrSuggestions] = await Promise.all([
-        api<Dashboard>(`/datasets/${datasetId}/dashboard`),
-        api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`),
-        api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`),
-      ]);
-      setDashboard(nextDashboard);
-      setSuggestions(nextSuggestions.suggestions);
-      setOcrSuggestions(nextOcrSuggestions.suggestions);
-      setTokenDrafts(previous => {
-        const next = { ...previous };
-        for (const suggestion of nextSuggestions.suggestions) {
-          next[suggestion.id] ??= suggestion.tokens;
-        }
-        return next;
-      });
-      setOcrDrafts(previous => {
-        const next = { ...previous };
-        for (const suggestion of nextOcrSuggestions.suggestions) {
-          next[suggestion.id] ??= suggestion.suggested_text ?? "";
-        }
-        return next;
-      });
-    } catch (error) {
-      showError(error);
-    }
+    await queryClient.invalidateQueries({ queryKey: queryKeys.workspace(datasetId) });
   }
 
-  async function runAction<T>(callback: () => Promise<T>, successMessage: string) {
+  async function runAction<T>(
+    callback: () => Promise<T>,
+    successMessage: string | ((result: T) => string),
+    afterSuccess: (result: T) => Promise<void> | void = () => invalidateWorkspace(),
+  ) {
     setWorking(true);
     try {
       const result = await callback();
-      setToast({ tone: "green", message: successMessage });
-      await refreshWorkspace();
+      setToast({ tone: "green", message: typeof successMessage === "function" ? successMessage(result) : successMessage });
+      await afterSuccess(result);
       return result;
     } catch (error) {
       showError(error);
@@ -354,7 +533,7 @@ export function App() {
 
   async function createDataset() {
     if (!datasetName.trim() || !languageCode.trim() || !languageName.trim()) return;
-    const created = await runAction(
+    await runAction(
       () =>
         api<Dataset>("/datasets", {
           method: "POST",
@@ -365,28 +544,33 @@ export function App() {
           }),
         }),
       "Dataset created",
+      async created => {
+        queryClient.setQueryData<Dataset[]>(queryKeys.datasets, current => [
+          ...(current ?? []).filter(dataset => dataset.id !== created.id),
+          created,
+        ]);
+        setSelectedDatasetId(created.id);
+        setAddLanguageFormOpen(false);
+        await invalidateDatasets();
+      },
     );
-    if (created) {
-      const rows = await api<Dataset[]>("/datasets");
-      setDatasets(rows);
-      setSelectedDatasetId(created.id);
-      setAddLanguageFormOpen(false);
-    }
   }
 
   async function deleteDataset(dataset: Dataset) {
     setWorking(true);
     try {
       await api<void>(`/datasets/${dataset.id}`, { method: "DELETE" });
-      const rows = await api<Dataset[]>("/datasets");
-      const currentStillExists = rows.some(item => item.id === selectedDatasetId);
-      const nextSelectedId = currentStillExists ? selectedDatasetId : rows[0]?.id || "";
+      const remaining = datasets.filter(item => item.id !== dataset.id);
+      const currentStillExists = remaining.some(item => item.id === selectedDatasetId);
+      const nextSelectedId = currentStillExists ? selectedDatasetId : remaining[0]?.id || "";
 
-      setDatasets(rows);
+      queryClient.setQueryData<Dataset[]>(queryKeys.datasets, remaining);
+      queryClient.removeQueries({ queryKey: queryKeys.workspace(dataset.id) });
       setSelectedDatasetId(nextSelectedId);
       setDeleteTarget(null);
       setToast({ tone: "green", message: "Language deleted" });
       setJobs([]);
+      await invalidateDatasets();
 
       if (!nextSelectedId) {
         clearWorkspaceState();
@@ -400,40 +584,44 @@ export function App() {
 
   async function importManualText() {
     if (!selectedDatasetId || !manualText.trim()) return;
+    const importKind = manualSource === "csv" ? manualImportKind : "generic";
     await runAction(async () => {
       const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/imports`, {
         method: "POST",
-        body: JSON.stringify({ text: manualText, source_type: manualSource }),
+        body: JSON.stringify({ text: manualText, source_type: manualSource, import_kind: importKind }),
       });
       rememberJob(response.job);
+      assertJobSucceeded(response.job);
       return response;
-    }, "Text imported");
+    }, response => importSuccessMessage(importKind === "generic" ? "Text imported" : "CSV labels imported", response.job));
   }
 
   async function importFile() {
     if (!selectedDatasetId || !uploadFile) return;
     const form = new FormData();
     form.append("file", uploadFile);
+    form.append("import_kind", fileImportKind);
     await runAction(async () => {
       const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/imports`, {
         method: "POST",
         body: form,
       });
       rememberJob(response.job);
+      assertJobSucceeded(response.job);
       setUploadFile(null);
       return response;
-    }, "File imported");
+    }, response => importSuccessMessage(fileImportKind === "generic" ? "File imported" : "CSV labels imported", response.job));
   }
 
-  async function runResearch(force = false) {
+  async function runResearch(force = false, researchType = activeResearchType) {
     if (!selectedDatasetId) return;
     await runAction(async () => {
-      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/research?force=${force}`, {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/research?type=${researchType}&force=${force}`, {
         method: "POST",
       });
       rememberJob(response.job);
       return response;
-    }, force ? "Research refreshed" : "Research ready");
+    }, force ? `${researchType.toUpperCase()} research refreshed` : `${researchType.toUpperCase()} research ready`);
   }
 
   async function generatePosSuggestions() {
@@ -444,8 +632,22 @@ export function App() {
         body: JSON.stringify({ limit: 5 }),
       });
       rememberJob(response.job);
+      assertJobSucceeded(response.job);
       return response;
     }, "Generated POS suggestions");
+  }
+
+  async function generateTranslationSuggestions() {
+    if (!selectedDatasetId) return;
+    await runAction(async () => {
+      const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/translation-suggestions`, {
+        method: "POST",
+        body: JSON.stringify({ limit: 5 }),
+      });
+      rememberJob(response.job);
+      assertJobSucceeded(response.job);
+      return response;
+    }, "Generated translation suggestions");
   }
 
   async function runOcr() {
@@ -463,16 +665,18 @@ export function App() {
   async function reviewSuggestion(suggestion: Suggestion, action: SuggestionStatus) {
     await runAction(async () => {
       const payload =
-        action === "edited" && suggestion.type === "pos"
+        action === "updated" && suggestion.type === "pos"
           ? { action, edited_tokens: tokenDrafts[suggestion.id] ?? suggestion.tokens }
-          : action === "edited"
+          : action === "updated" && suggestion.type === "translation"
+            ? { action, edited_text: translationDrafts[suggestion.id] ?? suggestion.suggested_text ?? "" }
+          : action === "updated"
             ? { action, edited_text: ocrDrafts[suggestion.id] ?? suggestion.suggested_text ?? "" }
-            : { action };
+              : { action };
       return api<Suggestion>(`/suggestions/${suggestion.id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
-    }, action === "approved" ? "Suggestion approved" : action === "denied" ? "Suggestion denied" : "Suggestion edited");
+    }, action === "accepted" ? "Suggestion accepted" : action === "denied" ? "Suggestion denied" : "Suggestion updated");
   }
 
   async function trainPosModel() {
@@ -492,11 +696,9 @@ export function App() {
   }
 
   function clearWorkspaceState() {
-    setDashboard(null);
-    setSuggestions([]);
-    setOcrSuggestions([]);
     setTokenDrafts({});
     setOcrDrafts({});
+    setTranslationDrafts({});
     setJobs([]);
   }
 
@@ -521,17 +723,6 @@ export function App() {
     if (value === "pos" || value === "ocr" || value === "translate" || value === "upload" || value === "models") {
       setActiveTab(value);
     }
-  }
-
-  if (loading) {
-    return (
-      <Box bg={UI.background} mih="100vh" p="xl">
-        <Group justify="center" mt="20vh">
-          <Loader color="violet" />
-          <Text c="dimmed">Loading workspace…</Text>
-        </Group>
-      </Box>
-    );
   }
 
   return (
@@ -584,7 +775,7 @@ export function App() {
         }}
       >
         <Group h="100%" px="md" wrap="nowrap">
-          <Title order={1} size="h3" lh={1.1} truncate>
+          <Title order={1} size="h3" lh={1.1} lineClamp={1}>
             {selectedDataset?.language_name ?? "Language"}
           </Title>
         </Group>
@@ -621,10 +812,10 @@ export function App() {
                   LB
                 </ThemeIcon>
                 <Box style={{ minWidth: 0 }}>
-                  <Text fw={850} lh={1} size="lg" truncate>
+                  <Text fw={850} lh={1} size="lg" truncate="end">
                     LangBase
                   </Text>
-                  <Text c="dimmed" size="xs" truncate>
+                  <Text c="dimmed" size="xs" truncate="end">
                     Low-resource AI workspace
                   </Text>
                 </Box>
@@ -652,7 +843,20 @@ export function App() {
                   </Text>
                 </Box>
               ) : null}
-              {datasets.length === 0 ? (
+              {datasetsLoading ? (
+                sidebarCollapsed ? (
+                  <ActionIcon aria-label="Loading languages" disabled radius="md" size={46} variant="subtle">
+                    <Loader color="violet" size="xs" />
+                  </ActionIcon>
+                ) : (
+                  <Group gap="xs" px="xs" py="sm">
+                    <Loader color="violet" size="xs" />
+                    <Text c="dimmed" size="sm">
+                      Loading languages…
+                    </Text>
+                  </Group>
+                )
+              ) : datasets.length === 0 ? (
                 <Text c="dimmed" px={sidebarCollapsed ? 0 : "xs"} size="sm" ta={sidebarCollapsed ? "center" : "left"}>
                   {sidebarCollapsed ? "None" : "No languages yet."}
                 </Text>
@@ -703,10 +907,10 @@ export function App() {
                         variant={dataset.id === selectedDataset?.id ? "light" : "subtle"}
                       >
                         <Box style={{ minWidth: 0, textAlign: "left" }}>
-                          <Text fw={700} size="sm" truncate>
+                          <Text fw={700} size="sm" truncate="end">
                             {dataset.name}
                           </Text>
-                          <Text c="dimmed" size="xs" truncate>
+                          <Text c="dimmed" size="xs" truncate="end">
                             {dataset.language_name} · {dataset.language_code}
                           </Text>
                         </Box>
@@ -762,7 +966,7 @@ export function App() {
                       label="Dataset"
                       name="datasetName"
                       onChange={event => setDatasetName(event.currentTarget.value)}
-                      placeholder="Nahuatl field notes…"
+                      placeholder="Dataset name"
                       size="xs"
                       value={datasetName}
                     />
@@ -772,7 +976,7 @@ export function App() {
                         label="Code"
                         name="languageCode"
                         onChange={event => setLanguageCode(event.currentTarget.value)}
-                        placeholder="nah…"
+                        placeholder="Language code"
                         size="xs"
                         spellCheck={false}
                         value={languageCode}
@@ -782,7 +986,7 @@ export function App() {
                         label="Language"
                         name="languageName"
                         onChange={event => setLanguageName(event.currentTarget.value)}
-                        placeholder="Nahuatl…"
+                        placeholder="Language name"
                         size="xs"
                         value={languageName}
                       />
@@ -824,6 +1028,17 @@ export function App() {
               </Paper>
             ) : null}
 
+            {selectedDataset ? (
+            <>
+            <ResearchPanel
+              activeType={activeResearchType}
+              research={researchByType[activeResearchType]}
+              working={working}
+              onResearch={() => void runResearch(false)}
+              onRefreshResearch={() => void runResearch(true)}
+              onTypeChange={setActiveResearchType}
+            />
+            <JobsPanel jobs={jobs} />
             <Tabs value={activeTab} onChange={handleTabChange} radius="md" variant="pills">
               <Tabs.List>
                 <Tabs.Tab leftSection={<TbTags aria-hidden="true" size={16} />} value="pos">
@@ -847,6 +1062,7 @@ export function App() {
                 <PosSuggestionsTable
                   suggestions={suggestions}
                   tokenDrafts={tokenDrafts}
+                  loading={workspaceLoading}
                   working={working}
                   onGenerate={() => void generatePosSuggestions()}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
@@ -859,6 +1075,7 @@ export function App() {
                   latestAssetImport={latestAssetImport}
                   suggestions={ocrSuggestions}
                   drafts={ocrDrafts}
+                  loading={workspaceLoading}
                   working={working}
                   onRunOcr={() => void runOcr()}
                   onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
@@ -867,7 +1084,17 @@ export function App() {
               </Tabs.Panel>
 
               <Tabs.Panel value="translate" pt="md">
-                <TranslationTable rows={TRANSLATION_ROWS} />
+                <TranslationTable
+                  labels={translationLabels}
+                  suggestions={translationSuggestions}
+                  drafts={translationDrafts}
+                  research={researchByType.translation}
+                  loading={workspaceLoading}
+                  working={working}
+                  onGenerate={() => void generateTranslationSuggestions()}
+                  onDraftChange={(id, value) => setTranslationDrafts(previous => ({ ...previous, [id]: value }))}
+                  onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
+                />
               </Tabs.Panel>
 
               <Tabs.Panel value="upload" pt="md">
@@ -885,6 +1112,20 @@ export function App() {
                         value={manualSource}
                         onChange={value => setManualSource((value as SourceType | null) ?? "text")}
                       />
+                      {manualSource === "csv" ? (
+                        <>
+                          <Select
+                            data={IMPORT_KIND_OPTIONS}
+                            label="CSV format"
+                            name="manualImportKind"
+                            value={manualImportKind}
+                            onChange={value => setManualImportKind((value as ImportKind | null) ?? "generic")}
+                          />
+                          <Text c="dimmed" size="xs">
+                            {csvFormatHint(manualImportKind)}
+                          </Text>
+                        </>
+                      ) : null}
                       <Textarea
                         autoComplete="off"
                         autosize
@@ -908,6 +1149,21 @@ export function App() {
 
                   <PaperPanel title="Files and Imports" eyebrow="CSV, TXT, PDF, image">
                     <Stack gap="md">
+                      <Select
+                        data={IMPORT_KIND_OPTIONS}
+                        label="CSV format"
+                        name="fileImportKind"
+                        value={fileImportKind}
+                        onChange={value => setFileImportKind((value as ImportKind | null) ?? "generic")}
+                      />
+                      <Text
+                        c={fileImportKind !== "generic" && uploadFile && !uploadFileIsCsv ? "red" : "dimmed"}
+                        size="xs"
+                      >
+                        {fileImportKind !== "generic" && uploadFile && !uploadFileIsCsv
+                          ? "Translation and POS label imports require a .csv file."
+                          : csvFormatHint(fileImportKind)}
+                      </Text>
                       <Group align="end" wrap="wrap">
                         <FileInput
                           flex={1}
@@ -919,14 +1175,14 @@ export function App() {
                         />
                         <Button
                           color="green"
-                          disabled={working || !uploadFile}
+                          disabled={working || !uploadFile || (fileImportKind !== "generic" && !uploadFileIsCsv)}
                           leftSection={<TbUpload aria-hidden="true" size={16} />}
                           onClick={() => void importFile()}
                         >
                           Upload
                         </Button>
                       </Group>
-                      <ImportsTable imports={dashboard?.imports ?? []} />
+                      <ImportsTable imports={dashboard?.imports ?? []} loading={workspaceLoading} />
                     </Stack>
                   </PaperPanel>
                 </SimpleGrid>
@@ -941,6 +1197,17 @@ export function App() {
                 />
               </Tabs.Panel>
             </Tabs>
+            </>
+            ) : datasetsLoading ? (
+              <Paper withBorder radius="md" p="lg" style={{ background: UI.panel, borderColor: UI.border }}>
+                <LoadingBlock message="Loading workspace data…" />
+              </Paper>
+            ) : (
+              <EmptyState
+                title="No backend data yet"
+                message="Create a language from the sidebar or import data once a language exists."
+              />
+            )}
           </Stack>
         </Box>
       </AppShell.Main>
@@ -997,24 +1264,65 @@ function PaperPanel({ title, eyebrow, children }: { title: string; eyebrow: stri
   );
 }
 
+function LoadingBlock({ message = "Loading data…" }: { message?: string }) {
+  return (
+    <Group gap="sm" py="lg">
+      <Loader color="violet" size="sm" />
+      <Text c="dimmed" size="sm">
+        {message}
+      </Text>
+    </Group>
+  );
+}
+
+function EmptyState({ title, message }: { title: string; message: string }) {
+  return (
+    <Paper withBorder radius="md" p="lg" style={{ background: UI.panel, borderColor: UI.border }}>
+      <Stack gap={4}>
+        <Title order={3} size="h4">
+          {title}
+        </Title>
+        <Text c="dimmed" size="sm">
+          {message}
+        </Text>
+      </Stack>
+    </Paper>
+  );
+}
+
 function ResearchPanel({
-  dashboard,
+  activeType,
+  research,
   working,
   onResearch,
   onRefreshResearch,
+  onTypeChange,
 }: {
-  dashboard: Dashboard | null;
+  activeType: ResearchType;
+  research: ResearchArtifact | null;
   working: boolean;
   onResearch: () => void;
   onRefreshResearch: () => void;
+  onTypeChange: (type: ResearchType) => void;
 }) {
-  const research = dashboard?.research;
+  const title = activeType === "pos" ? "POS research" : "Translation research";
   return (
-    <PaperPanel title="Cached research notes" eyebrow="Dataset + language">
+    <PaperPanel title="Cached research notes" eyebrow="Dataset + language + task">
       <Stack gap="sm">
-        <Group gap="xs">
+        <Group align="end" gap="xs" wrap="wrap">
+          <Select
+            data={[
+              { value: "pos", label: "POS" },
+              { value: "translation", label: "Translation" },
+            ]}
+            label="Research type"
+            name="researchType"
+            onChange={value => onTypeChange((value as ResearchType | null) ?? "pos")}
+            value={activeType}
+            w={180}
+          />
           <Button disabled={working} onClick={onResearch}>
-            {research ? "Use Cached Research" : "Run Research"}
+            {research ? `Use Cached ${title}` : `Run ${title}`}
           </Button>
           <Button color="green" disabled={working} onClick={onRefreshResearch} variant="light">
             Refresh
@@ -1037,10 +1345,19 @@ function ResearchPanel({
                 </Badge>
               ))}
             </Group>
+            {research.warnings.length > 0 ? (
+              <Stack gap={4}>
+                {research.warnings.map((warning, index) => (
+                  <Text key={`${warning.provider}-${warning.stage}-${index}`} c="yellow" size="xs">
+                    Demo fallback: {warning.provider} {warning.stage} - {warning.message}
+                  </Text>
+                ))}
+              </Stack>
+            ) : null}
           </>
         ) : (
           <Text c="dimmed" size="sm">
-            Research has not been generated for this workspace yet.
+            {title} has not been generated for this workspace yet.
           </Text>
         )}
       </Stack>
@@ -1059,13 +1376,13 @@ function SuggestionActions({
 }) {
   return (
     <Group gap="xs">
-      <Button color="green" disabled={working} onClick={() => onReview(suggestion, "approved")} size="compact-xs">
+      <Button color="green" disabled={working} onClick={() => onReview(suggestion, "accepted")} size="compact-xs">
         Approve
       </Button>
       <Button
         color="violet"
         disabled={working}
-        onClick={() => onReview(suggestion, "edited")}
+        onClick={() => onReview(suggestion, "updated")}
         size="compact-xs"
         variant="light"
       >
@@ -1081,6 +1398,7 @@ function SuggestionActions({
 function PosSuggestionsTable({
   suggestions,
   tokenDrafts,
+  loading,
   working,
   onGenerate,
   onReview,
@@ -1088,6 +1406,7 @@ function PosSuggestionsTable({
 }: {
   suggestions: Suggestion[];
   tokenDrafts: DraftMap;
+  loading: boolean;
   working: boolean;
   onGenerate: () => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
@@ -1183,7 +1502,9 @@ function PosSuggestionsTable({
             Generate 5 Suggestions
           </Button>
         </Group>
-        {suggestions.length === 0 ? (
+        {loading ? (
+          <LoadingBlock message="Loading POS suggestions…" />
+        ) : suggestions.length === 0 ? (
           <Text c="dimmed" size="sm">
             No pending POS suggestions. Generate a batch after uploading text.
           </Text>
@@ -1220,7 +1541,7 @@ function PosSuggestionsTable({
   );
 }
 
-function ImportsTable({ imports }: { imports: ImportRecord[] }) {
+function ImportsTable({ imports, loading = false }: { imports: ImportRecord[]; loading?: boolean }) {
   const columns = useMemo(() => {
     const columnHelper = createColumnHelper<ImportRecord>();
 
@@ -1237,7 +1558,7 @@ function ImportsTable({ imports }: { imports: ImportRecord[] }) {
         id: "file",
         header: "File",
         cell: info => (
-          <Text maw={280} size="sm" truncate>
+          <Text maw={280} size="sm" truncate="end">
             {info.getValue()}
           </Text>
         ),
@@ -1267,6 +1588,10 @@ function ImportsTable({ imports }: { imports: ImportRecord[] }) {
     data: imports,
     getCoreRowModel: getCoreRowModel(),
   });
+
+  if (loading) {
+    return <LoadingBlock message="Loading imports…" />;
+  }
 
   if (imports.length === 0) {
     return (
@@ -1307,6 +1632,7 @@ function OcrSuggestionsTable({
   latestAssetImport,
   suggestions,
   drafts,
+  loading,
   working,
   onRunOcr,
   onDraftChange,
@@ -1315,6 +1641,7 @@ function OcrSuggestionsTable({
   latestAssetImport: ImportRecord | null;
   suggestions: Suggestion[];
   drafts: TextDraftMap;
+  loading: boolean;
   working: boolean;
   onRunOcr: () => void;
   onDraftChange: (id: string, value: string) => void;
@@ -1328,7 +1655,7 @@ function OcrSuggestionsTable({
         header: "Image/PDF",
         cell: info => (
           <Box maw={260}>
-            <Text fw={700} size="sm" truncate>
+            <Text fw={700} size="sm" truncate="end">
               {info.getValue()}
             </Text>
             <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
@@ -1396,7 +1723,9 @@ function OcrSuggestionsTable({
             Run OCR
           </Button>
         </Group>
-        {suggestions.length === 0 ? (
+        {loading ? (
+          <LoadingBlock message="Loading OCR suggestions…" />
+        ) : suggestions.length === 0 ? (
           <Text c="dimmed" size="sm">
             No pending OCR suggestions.
           </Text>
@@ -1433,20 +1762,47 @@ function OcrSuggestionsTable({
   );
 }
 
-function TranslationTable({ rows }: { rows: TranslationRow[] }) {
-  const columns = useMemo(() => {
-    const columnHelper = createColumnHelper<TranslationRow>();
+function translationValue(label: Label) {
+  const value = label.value["text"];
+  return typeof value === "string" ? value : JSON.stringify(label.value);
+}
+
+function TranslationTable({
+  labels,
+  suggestions,
+  drafts,
+  research,
+  loading,
+  working,
+  onGenerate,
+  onDraftChange,
+  onReview,
+}: {
+  labels: Label[];
+  suggestions: Suggestion[];
+  drafts: TextDraftMap;
+  research: ResearchArtifact | null;
+  loading: boolean;
+  working: boolean;
+  onGenerate: () => void;
+  onDraftChange: (id: string, value: string) => void;
+  onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
+}) {
+  const labelColumns = useMemo(() => {
+    const columnHelper = createColumnHelper<Label>();
 
     return [
-      columnHelper.accessor("text", {
+      columnHelper.accessor(row => row.data_text ?? "", {
+        id: "text",
         header: "Text",
         cell: info => (
           <Text fw={700} size="sm">
-            {info.getValue()}
+            {info.getValue() || "No source text"}
           </Text>
         ),
       }),
-      columnHelper.accessor("translation", {
+      columnHelper.accessor(row => translationValue(row), {
+        id: "translation",
         header: "Translation",
         cell: info => (
           <Text size="sm">
@@ -1454,53 +1810,176 @@ function TranslationTable({ rows }: { rows: TranslationRow[] }) {
           </Text>
         ),
       }),
-      columnHelper.accessor("suggestions", {
-        header: "Suggestions",
+      columnHelper.accessor("source", {
+        header: "Source",
         cell: info => (
-          <Group gap="xs">
-            {info.getValue().map(suggestion => (
-              <Badge key={suggestion} color="violet" radius="sm" variant="light">
-                {suggestion}
-              </Badge>
-            ))}
-          </Group>
+          <Badge color="violet" radius="sm" variant="light">
+            {info.getValue()}
+          </Badge>
         ),
       }),
     ];
   }, []);
 
-  const table = useReactTable({
-    columns,
-    data: rows,
+  const suggestionColumns = useMemo(() => {
+    const columnHelper = createColumnHelper<Suggestion>();
+
+    return [
+      columnHelper.accessor("original_text", {
+        header: "Text",
+        cell: info => (
+          <Box maw={320}>
+            <Text fw={700} size="sm">
+              {info.getValue()}
+            </Text>
+            <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
+              {info.row.original.status}
+            </Badge>
+          </Box>
+        ),
+      }),
+      columnHelper.display({
+        id: "translation",
+        header: "Suggested Translation",
+        cell: info => {
+          const suggestion = info.row.original;
+          return (
+            <Textarea
+              aria-label={`Translation for ${suggestion.original_text}`}
+              autoComplete="off"
+              autosize
+              minRows={2}
+              name={`translation-${suggestion.id}`}
+              onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
+              value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
+              w={360}
+            />
+          );
+        },
+      }),
+      columnHelper.display({
+        id: "actions",
+        header: "Review",
+        cell: info => {
+          const suggestion = info.row.original;
+          return (
+            <Stack gap="xs" miw={240}>
+              <Group gap="xs">
+                <Badge color="grape" radius="sm" variant="light">
+                  {formatPercent(suggestion.confidence)}
+                </Badge>
+                <Text c="dimmed" size="xs">
+                  AI suggestion
+                </Text>
+              </Group>
+              <Text c="dimmed" size="xs">
+                {suggestion.rationale || "Review the suggested translation."}
+              </Text>
+              <SuggestionActions suggestion={suggestion} working={working} onReview={onReview} />
+            </Stack>
+          );
+        },
+      }),
+    ];
+  }, [drafts, onDraftChange, onReview, working]);
+
+  const labelTable = useReactTable({
+    columns: labelColumns,
+    data: labels,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
+  const suggestionTable = useReactTable({
+    columns: suggestionColumns,
+    data: suggestions,
     getCoreRowModel: getCoreRowModel(),
   });
 
   return (
-    <PaperPanel title="Translate" eyebrow="Text, translation, suggestions">
-      <ScrollArea type="auto">
-        <Table miw={780} highlightOnHover>
-          <Table.Thead>
-            {table.getHeaderGroups().map(headerGroup => (
-              <Table.Tr key={headerGroup.id}>
-                {headerGroup.headers.map(header => (
-                  <Table.Th key={header.id}>
-                    {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
-                  </Table.Th>
+    <PaperPanel title="Translate" eyebrow="Labels, research, suggestions">
+      <Stack gap="md">
+        <Group justify="space-between" wrap="wrap">
+          <Text c="dimmed" size="sm">
+            Pending suggestions: {suggestions.length}
+          </Text>
+          <Button disabled={working || !research} onClick={onGenerate}>
+            Generate 5 Suggestions
+          </Button>
+        </Group>
+        {!research ? (
+          <Text c="dimmed" size="sm">
+            Run translation research before generating translation suggestions.
+          </Text>
+        ) : null}
+        {loading ? (
+          <LoadingBlock message="Loading translations…" />
+        ) : suggestions.length > 0 ? (
+          <ScrollArea type="auto">
+            <Table miw={940} highlightOnHover>
+              <Table.Thead>
+                {suggestionTable.getHeaderGroups().map(headerGroup => (
+                  <Table.Tr key={headerGroup.id}>
+                    {headerGroup.headers.map(header => (
+                      <Table.Th key={header.id}>
+                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                      </Table.Th>
+                    ))}
+                  </Table.Tr>
                 ))}
-              </Table.Tr>
-            ))}
-          </Table.Thead>
-          <Table.Tbody>
-            {table.getRowModel().rows.map(row => (
-              <Table.Tr key={row.id}>
-                {row.getVisibleCells().map(cell => (
-                  <Table.Td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</Table.Td>
+              </Table.Thead>
+              <Table.Tbody>
+                {suggestionTable.getRowModel().rows.map(row => (
+                  <Table.Tr key={row.id}>
+                    {row.getVisibleCells().map(cell => (
+                      <Table.Td key={cell.id} style={{ verticalAlign: "top" }}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </Table.Td>
+                    ))}
+                  </Table.Tr>
                 ))}
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      </ScrollArea>
+              </Table.Tbody>
+            </Table>
+          </ScrollArea>
+        ) : (
+          <Text c="dimmed" size="sm">
+            No pending translation suggestions.
+          </Text>
+        )}
+        <Divider />
+        <Text fw={700} size="sm">
+          Saved translation labels
+        </Text>
+        {labels.length === 0 ? (
+          <Text c="dimmed" size="sm">
+            No translation labels yet. Import a translation CSV or accept AI suggestions.
+          </Text>
+        ) : (
+          <ScrollArea type="auto">
+            <Table miw={780} highlightOnHover>
+              <Table.Thead>
+                {labelTable.getHeaderGroups().map(headerGroup => (
+                  <Table.Tr key={headerGroup.id}>
+                    {headerGroup.headers.map(header => (
+                      <Table.Th key={header.id}>
+                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                      </Table.Th>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Thead>
+              <Table.Tbody>
+                {labelTable.getRowModel().rows.map(row => (
+                  <Table.Tr key={row.id}>
+                    {row.getVisibleCells().map(cell => (
+                      <Table.Td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</Table.Td>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </ScrollArea>
+        )}
+      </Stack>
     </PaperPanel>
   );
 }
@@ -1516,6 +1995,16 @@ function ModelsPanel({
   working: boolean;
   onTrainPos: () => void;
 }) {
+  const minimumExamples = posModel?.minimum_examples ?? 20;
+  const minimumMet = posModel?.minimum_examples_met ?? acceptedPosCount >= minimumExamples;
+  const trainingMode = posModel?.mode ?? "demo";
+  const posStatus = posModel
+    ? `${trainingMode === "demo" ? "demo " : ""}${posModel.status.replaceAll("_", " ")}`
+    : "not started";
+  const posDescription = minimumMet
+    ? `${acceptedPosCount} reviewed examples are ready for the tagger.`
+    : `${acceptedPosCount}/${minimumExamples} reviewed examples; demo mode can still run for the presentation.`;
+
   return (
     <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
       <ModelTrainingCard
@@ -1535,11 +2024,11 @@ function ModelsPanel({
         tone="violet"
       />
       <ModelTrainingCard
-        actionLabel="Train POS Tagger"
-        description={`${acceptedPosCount} accepted examples are ready to train the tagger.`}
+        actionLabel="Run Demo POS Training"
+        description={posDescription}
         disabled={working}
         onAction={onTrainPos}
-        status={posModel?.status.replaceAll("_", " ") ?? "not started"}
+        status={posStatus}
         title="POS Tagging"
         tone="green"
       />
@@ -1594,28 +2083,58 @@ function ModelTrainingCard({
   );
 }
 
+function jobWarnings(job: Job): ProviderWarning[] {
+  const warnings = job.metadata["warnings"];
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter(
+    (warning): warning is ProviderWarning =>
+      typeof warning === "object" &&
+      warning !== null &&
+      "provider" in warning &&
+      "stage" in warning &&
+      "message" in warning,
+  );
+}
+
 function JobsPanel({ jobs }: { jobs: Job[] }) {
   if (jobs.length === 0) return null;
   return (
     <PaperPanel title="Recent jobs" eyebrow="Polling-compatible status">
       <SimpleGrid cols={{ base: 1, md: 3 }} spacing="sm">
-        {jobs.map(job => (
-          <Card key={job.id} withBorder radius="md" p="sm" style={{ background: UI.panelSoft, borderColor: UI.border }}>
-            <Group justify="space-between" wrap="nowrap">
-              <Box>
-                <Text fw={700} size="sm">
-                  {job.type}
-                </Text>
-                <Text c="dimmed" size="xs">
-                  {job.message || job.id}
-                </Text>
-              </Box>
-              <Badge color={statusColor(job.status)} radius="sm" variant="dot">
-                {job.status}
-              </Badge>
-            </Group>
-          </Card>
-        ))}
+        {jobs.map(job => {
+          const warnings = jobWarnings(job);
+          const usedFallback = job.metadata["used_fallback"] === true || warnings.length > 0;
+
+          return (
+            <Card key={job.id} withBorder radius="md" p="sm" style={{ background: UI.panelSoft, borderColor: UI.border }}>
+              <Stack gap={6}>
+                <Group justify="space-between" wrap="nowrap">
+                  <Box>
+                    <Text fw={700} size="sm">
+                      {job.type}
+                    </Text>
+                    <Text c="dimmed" size="xs">
+                      {job.message || job.id}
+                    </Text>
+                  </Box>
+                  <Badge color={statusColor(job.status)} radius="sm" variant="dot">
+                    {job.status}
+                  </Badge>
+                </Group>
+                {usedFallback ? (
+                  <Badge color="yellow" radius="sm" variant="light" w="fit-content">
+                    Demo fallback
+                  </Badge>
+                ) : null}
+                {warnings.slice(0, 1).map(warning => (
+                  <Text key={`${job.id}-${warning.provider}-${warning.stage}`} c="dimmed" size="xs">
+                    {warning.provider}: {warning.message}
+                  </Text>
+                ))}
+              </Stack>
+            </Card>
+          );
+        })}
       </SimpleGrid>
     </PaperPanel>
   );

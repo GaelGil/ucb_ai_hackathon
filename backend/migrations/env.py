@@ -1,5 +1,7 @@
 from logging.config import fileConfig
+import os
 
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
@@ -7,17 +9,22 @@ from alembic import context
 
 # Load app settings (DATABASE_URL from .env) and import every model so that
 # they register on SQLModel.metadata for autogenerate.
-from app.src.config import get_settings
+from app.src.config import BACKEND_ROOT, get_settings
 import app.src.database.models  # noqa: F401  (registers all tables)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
-# Inject the database URL from our pydantic-settings config so we keep a
-# single source of truth (the .env file) instead of hardcoding it in the ini.
+# Load dotenv files explicitly for Alembic, then inject the runtime URL so
+# migrations never use the placeholder in alembic.ini.
+load_dotenv(BACKEND_ROOT / ".env")
+load_dotenv(BACKEND_ROOT / ".env.local")
+
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+database_url = os.getenv("DATABASE_URL") or settings.database_url
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:

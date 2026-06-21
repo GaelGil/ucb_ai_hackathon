@@ -8,6 +8,7 @@ Create Date: 2026-06-20
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -18,13 +19,67 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-data_source_type = sa.Enum("text", "csv", "txt", "pdf", "image", name="datasourcetype")
-import_status = sa.Enum("pending", "processing", "ready", "failed", name="importstatus")
-label_type = sa.Enum("pos", "ocr", "translation", "emotion", "intention", "text", "custom", name="labeltype")
-label_source = sa.Enum("csv_import", "human", "ai_accepted", "ai_updated", name="labelsource")
-suggestion_status = sa.Enum("pending", "accepted", "denied", "updated", name="suggestionstatus")
-research_type = sa.Enum("ocr", "pos", "translation", "grammar", "custom", name="researchtype")
-job_status = sa.Enum("queued", "running", "succeeded", "failed", name="jobstatus")
+data_source_type = postgresql.ENUM(
+    "text",
+    "csv",
+    "txt",
+    "pdf",
+    "image",
+    name="datasourcetype",
+    create_type=False,
+)
+import_status = postgresql.ENUM(
+    "pending",
+    "processing",
+    "ready",
+    "failed",
+    name="importstatus",
+    create_type=False,
+)
+label_type = postgresql.ENUM(
+    "pos",
+    "ocr",
+    "translation",
+    "emotion",
+    "intention",
+    "text",
+    "custom",
+    name="labeltype",
+    create_type=False,
+)
+label_source = postgresql.ENUM(
+    "csv_import",
+    "human",
+    "ai_accepted",
+    "ai_updated",
+    name="labelsource",
+    create_type=False,
+)
+suggestion_status = postgresql.ENUM(
+    "pending",
+    "accepted",
+    "denied",
+    "updated",
+    name="suggestionstatus",
+    create_type=False,
+)
+research_type = postgresql.ENUM(
+    "ocr",
+    "pos",
+    "translation",
+    "grammar",
+    "custom",
+    name="researchtype",
+    create_type=False,
+)
+job_status = postgresql.ENUM(
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    name="jobstatus",
+    create_type=False,
+)
 
 
 def upgrade() -> None:

@@ -8,7 +8,7 @@ from app.src.api.mappers import dataset_to_api, import_to_api, job_to_api, resea
 from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Job, Label, Language, Research
 from app.src.database.models.data import DataSourceType
 from app.src.database.models.job import JobStatus as DbJobStatus
-from app.src.database.models.label import LabelType
+from app.src.database.models.label import LabelSource, LabelType
 from app.src.database.models.research import ResearchType
 from app.src.models import Dashboard, DatasetCreate, Job as ApiJob
 from app.src.models import Dataset as ApiDataset
@@ -122,7 +122,19 @@ class DatasetService:
 
     def _get_pos_model(self, dataset_id: str) -> PosModelState:
         labels = self.session.exec(
-            select(Label).where(Label.dataset_id == dataset_id).where(Label.type == LabelType.pos)
+            select(Label)
+            .where(Label.dataset_id == dataset_id)
+            .where(Label.type == LabelType.pos)
+            .where(
+                Label.source.in_(
+                    [
+                        LabelSource.human,
+                        LabelSource.ai_accepted,
+                        LabelSource.ai_updated,
+                        LabelSource.csv_import,
+                    ]
+                )
+            )
         ).all()
         accepted_count = len(labels)
         jobs = self.session.exec(
@@ -138,4 +150,5 @@ class DatasetService:
             dataset_id=dataset_id,
             status=PosModelStatus.NOT_STARTED,
             accepted_sentence_count=accepted_count,
+            minimum_examples_met=accepted_count >= 20,
         )

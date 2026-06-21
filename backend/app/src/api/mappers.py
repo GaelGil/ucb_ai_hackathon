@@ -94,10 +94,12 @@ def data_row_to_text_item(row: DataRow) -> api.TextItem:
 
 
 def label_to_api(label: Label) -> api.Label:
+    data_row = getattr(label, "data_row", None)
     return api.Label(
         id=label.id,
         dataset_id=label.dataset_id,
         data_row_id=label.data_row_id,
+        data_text=data_row.text_content if data_row is not None else None,
         import_id=label.import_id,
         ai_suggestion_id=label.ai_suggestion_id,
         type=suggestion_type_to_api(label.type),
@@ -124,13 +126,16 @@ def job_to_api(job: Job) -> api.Job:
 
 
 def research_to_api(dataset: Dataset, language: Language, research: Research) -> api.ResearchArtifact:
+    warnings = research.research_metadata.get("warnings", [])
     return api.ResearchArtifact(
         id=research.id,
         dataset_id=dataset.id,
         language_code=language.code,
+        type=research.type.value if hasattr(research.type, "value") else str(research.type),
         summary=research.notes or "",
         guidelines=[str(item) for item in research.research_metadata.get("guidelines", [])],
         sources=[_research_source(source) for source in research.sources],
+        warnings=[api.ProviderWarning.model_validate(warning) for warning in warnings],
         created_at=research.created_at,
         updated_at=research.updated_at,
     )
@@ -142,6 +147,11 @@ def ai_suggestion_to_api(suggestion: AiSuggestion) -> api.Suggestion:
     value = human if suggestion.status == DbSuggestionStatus.updated and human else original
     tokens = [_token_suggestion(item) for item in value.get("tokens") or original.get("tokens") or []]
     suggested_text = value.get("text") if suggestion.label_type != LabelType.pos else None
+    original_text = (
+        original.get("source_text")
+        if suggestion.label_type == LabelType.translation
+        else original.get("text")
+    )
     return api.Suggestion(
         id=suggestion.id,
         dataset_id=suggestion.dataset_id,
@@ -149,7 +159,7 @@ def ai_suggestion_to_api(suggestion: AiSuggestion) -> api.Suggestion:
         research_id=suggestion.research_id,
         type=suggestion_type_to_api(suggestion.label_type),
         status=suggestion_status_to_api(suggestion.status),
-        original_text=str(original.get("text") or suggestion.data_row.text_content or ""),
+        original_text=str(original_text or suggestion.data_row.text_content or ""),
         suggested_text=str(suggested_text) if suggested_text is not None else None,
         tokens=tokens,
         confidence=suggestion.confidence,
