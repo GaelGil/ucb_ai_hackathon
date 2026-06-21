@@ -63,6 +63,97 @@ def test_research_is_cached_per_dataset_language(client: TestClient) -> None:
     assert second["job"]["metadata"]["cached"] is True
 
 
+def test_research_is_separate_by_type(client: TestClient) -> None:
+    dataset = client.get("/datasets").json()[0]
+
+    pos = client.post(f"/datasets/{dataset['id']}/research", params={"type": "pos"}).json()
+    translation = client.post(f"/datasets/{dataset['id']}/research", params={"type": "translation"}).json()
+
+    assert pos["research"]["id"] != translation["research"]["id"]
+    assert pos["research"]["type"] == "pos"
+    assert translation["research"]["type"] == "translation"
+    assert translation["job"]["metadata"]["research_type"] == "translation"
+
+
+def test_pos_suggestions_require_pos_research(client: TestClient) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "Research gate", "language_code": "gate", "language_name": "Gate"},
+    ).json()
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "uno dos tres", "source_type": "text"},
+    )
+
+    response = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()
+
+    assert response["suggestions"] == []
+    assert response["job"]["status"] == "failed"
+    assert "POS research must be generated" in response["job"]["error"]
+
+
+def test_translation_suggestions_require_translation_research(client: TestClient) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "No translation research", "language_code": "nah", "language_name": "Nahuatl"},
+    ).json()
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "muchas flores son blancas", "source_type": "text"},
+    )
+
+    response = client.post(f"/datasets/{dataset['id']}/translation-suggestions", json={"limit": 5}).json()
+
+    assert response["suggestions"] == []
+    assert response["job"]["status"] == "failed"
+    assert "Translation research must be generated" in response["job"]["error"]
+
+
+def test_translation_suggestions_skip_existing_translation_labels_and_can_be_reviewed(client: TestClient) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "Translation pilot", "language_code": "nah", "language_name": "Nahuatl"},
+    ).json()
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={
+            "source_type": "csv",
+            "import_kind": "translation",
+            "text": "text,translation,source,src,target\nmuchas flores son blancas,miak xochitl istak,seed,sp,nah\n",
+        },
+    )
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "el agua corre rapido\nmi familia habla nahuatl", "source_type": "text"},
+    )
+    research = client.post(f"/datasets/{dataset['id']}/research", params={"type": "translation"}).json()
+
+    response = client.post(f"/datasets/{dataset['id']}/translation-suggestions", json={"limit": 5}).json()
+
+    assert response["job"]["status"] == "succeeded"
+    assert response["job"]["metadata"]["research_type"] == "translation"
+    assert len(response["suggestions"]) == 2
+    assert {suggestion["original_text"] for suggestion in response["suggestions"]} == {
+        "el agua corre rapido",
+        "mi familia habla nahuatl",
+    }
+    assert all(suggestion["research_id"] == research["research"]["id"] for suggestion in response["suggestions"])
+    assert all(suggestion["suggested_text"] for suggestion in response["suggestions"])
+
+    accepted = client.patch(f"/suggestions/{response['suggestions'][0]['id']}", json={"action": "accepted"}).json()
+    updated = client.patch(
+        f"/suggestions/{response['suggestions'][1]['id']}",
+        json={"action": "updated", "edited_text": "nochanehua tlahtoa nahuatlahtolli"},
+    ).json()
+
+    assert accepted["status"] == "accepted"
+    assert updated["status"] == "updated"
+    labels = client.get(f"/datasets/{dataset['id']}/labels", params={"type": "translation"}).json()["labels"]
+    values = [label["value"]["text"] for label in labels]
+    assert "miak xochitl istak" in values
+    assert "nochanehua tlahtoa nahuatlahtolli" in values
+
+
 def test_csv_import_uses_text_column(client: TestClient) -> None:
     dataset = client.get("/datasets").json()[0]
 

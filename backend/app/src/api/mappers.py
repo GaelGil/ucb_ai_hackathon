@@ -145,6 +145,11 @@ def ai_suggestion_to_api(suggestion: AiSuggestion) -> api.Suggestion:
     value = human if suggestion.status == DbSuggestionStatus.updated and human else original
     tokens = [_token_suggestion(item) for item in value.get("tokens") or original.get("tokens") or []]
     suggested_text = value.get("text") if suggestion.label_type != LabelType.pos else None
+    original_text = (
+        original.get("source_text")
+        if suggestion.label_type == LabelType.translation
+        else original.get("text")
+    )
     return api.Suggestion(
         id=suggestion.id,
         dataset_id=suggestion.dataset_id,
@@ -152,7 +157,7 @@ def ai_suggestion_to_api(suggestion: AiSuggestion) -> api.Suggestion:
         research_id=suggestion.research_id,
         type=suggestion_type_to_api(suggestion.label_type),
         status=suggestion_status_to_api(suggestion.status),
-        original_text=str(original.get("text") or suggestion.data_row.text_content or ""),
+        original_text=str(original_text or suggestion.data_row.text_content or ""),
         suggested_text=str(suggested_text) if suggested_text is not None else None,
         tokens=tokens,
         confidence=suggestion.confidence,

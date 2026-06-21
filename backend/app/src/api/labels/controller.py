@@ -15,6 +15,7 @@ from app.src.models import (
     SuggestionStatus,
     SuggestionType,
     SuggestionsResponse,
+    TranslationSuggestionRequest,
 )
 
 
@@ -28,6 +29,16 @@ def create_pos_suggestions(
     service: LabelsService = Depends(get_labels_service),
 ) -> dict:
     suggestions, job = service.create_pos_suggestions(dataset_id, limit=payload.limit)
+    return {"suggestions": suggestions, "job": job}
+
+
+@router.post("/datasets/{dataset_id}/translation-suggestions")
+def create_translation_suggestions(
+    dataset_id: str,
+    payload: TranslationSuggestionRequest,
+    service: LabelsService = Depends(get_labels_service),
+) -> dict:
+    suggestions, job = service.create_translation_suggestions(dataset_id, limit=payload.limit)
     return {"suggestions": suggestions, "job": job}
 
 

@@ -12,6 +12,7 @@ from app.src.database.models import AiSuggestion, DataRow, Dataset, Job, Label
 from app.src.database.models.job import JobStatus as DbJobStatus
 from app.src.database.models.label import LabelSource, LabelType
 from app.src.database.models.language import now_utc
+from app.src.database.models.research import ResearchType
 from app.src.database.models.suggestion import SuggestionStatus as DbSuggestionStatus
 from app.src.jobs import JobRunner
 from app.src.models import (
@@ -26,7 +27,7 @@ from app.src.models import (
     SuggestionStatus,
     SuggestionType,
 )
-from app.src.providers import PosAnnotationProvider
+from app.src.providers import PosAnnotationProvider, TranslationProvider
 from app.src.repositories import NotFoundError
 
 
@@ -35,39 +36,31 @@ class LabelsService:
         self,
         session: Session,
         pos_provider: PosAnnotationProvider,
+        translation_provider: TranslationProvider,
         research_service: ResearchService,
         jobs: JobRunner,
     ) -> None:
         self.session = session
         self.pos_provider = pos_provider
+        self.translation_provider = translation_provider
         self.research_service = research_service
         self.jobs = jobs
 
     def create_pos_suggestions(self, dataset_id: str, limit: int = 5) -> tuple[list[Suggestion], ApiJob]:
         dataset = self._get_dataset(dataset_id)
-        research, _ = self.research_service.ensure_research(dataset.id)
+        research = self.research_service.get_research(dataset.id, ResearchType.pos)
+        if research is None:
+            job = self.jobs.create_failed(
+                "pos_suggestions",
+                "POS research must be generated before creating POS suggestions.",
+                metadata={"dataset_id": dataset.id, "research_type": ResearchType.pos.value},
+            )
+            return [], job
         created: list[AiSuggestion] = []
 
         def callback(job: ApiJob) -> dict:
             del job
-            existing_row_ids = {
-                suggestion.data_row_id
-                for suggestion in self.session.exec(
-                    select(AiSuggestion)
-                    .where(AiSuggestion.dataset_id == dataset.id)
-                    .where(AiSuggestion.label_type == LabelType.pos)
-                ).all()
-            }
-            candidates = [
-                row
-                for row in self.session.exec(
-                    select(DataRow)
-                    .where(DataRow.dataset_id == dataset.id)
-                    .where(DataRow.text_content.is_not(None))
-                    .order_by(DataRow.created_at)
-                ).all()
-                if row.id not in existing_row_ids and row.text_content
-            ][:limit]
+            candidates = self._candidate_text_rows(dataset.id, LabelType.pos, limit)
             for row in candidates:
                 tokens = self.pos_provider.suggest(row.text_content or "", research)
                 confidence = sum(token.confidence for token in tokens) / max(len(tokens), 1)
@@ -93,6 +86,54 @@ class LabelsService:
             return {"dataset_id": dataset.id, "created_count": len(created), "research_id": research.id}
 
         job = self.jobs.run("pos_suggestions", callback)
+        return [ai_suggestion_to_api(suggestion) for suggestion in created], job
+
+    def create_translation_suggestions(self, dataset_id: str, limit: int = 5) -> tuple[list[Suggestion], ApiJob]:
+        dataset = self._get_dataset(dataset_id)
+        research = self.research_service.get_research(dataset.id, ResearchType.translation)
+        if research is None:
+            job = self.jobs.create_failed(
+                "translation_suggestions",
+                "Translation research must be generated before creating translation suggestions.",
+                metadata={"dataset_id": dataset.id, "research_type": ResearchType.translation.value},
+            )
+            return [], job
+        created: list[AiSuggestion] = []
+
+        def callback(job: ApiJob) -> dict:
+            del job
+            candidates = self._candidate_text_rows(dataset.id, LabelType.translation, limit)
+            direction = f"spanish_to_{dataset.language.code}"
+            for row in candidates:
+                translated_text, provider, model = self.translation_provider.translate(row.text_content or "", direction)
+                suggestion = AiSuggestion(
+                    dataset_id=dataset.id,
+                    data_row_id=row.id,
+                    research_id=research.id,
+                    label_type=LabelType.translation,
+                    original_value={
+                        "source_text": row.text_content,
+                        "text": translated_text,
+                        "direction": direction,
+                    },
+                    confidence=0.72,
+                    rationale=f"Generated with cached translation research profile {research.id}.",
+                    provider=provider,
+                    model_name=model,
+                )
+                self.session.add(suggestion)
+                created.append(suggestion)
+            self.session.commit()
+            for suggestion in created:
+                self.session.refresh(suggestion)
+            return {
+                "dataset_id": dataset.id,
+                "created_count": len(created),
+                "research_id": research.id,
+                "research_type": ResearchType.translation.value,
+            }
+
+        job = self.jobs.run("translation_suggestions", callback)
         return [ai_suggestion_to_api(suggestion) for suggestion in created], job
 
     def list_suggestions(
@@ -230,8 +271,37 @@ class LabelsService:
                 "tokens": [token.model_dump() for token in review.edited_tokens],
             }
         if review.edited_text is not None:
-            return {"text": review.edited_text}
+            value = dict(suggestion.original_value)
+            value["text"] = review.edited_text
+            return value
         return suggestion.original_value
+
+    def _candidate_text_rows(self, dataset_id: str, label_type: LabelType, limit: int) -> list[DataRow]:
+        existing_suggestion_row_ids = {
+            suggestion.data_row_id
+            for suggestion in self.session.exec(
+                select(AiSuggestion)
+                .where(AiSuggestion.dataset_id == dataset_id)
+                .where(AiSuggestion.label_type == label_type)
+            ).all()
+        }
+        existing_label_row_ids = {
+            label.data_row_id
+            for label in self.session.exec(
+                select(Label).where(Label.dataset_id == dataset_id).where(Label.type == label_type)
+            ).all()
+        }
+        excluded_row_ids = existing_suggestion_row_ids | existing_label_row_ids
+        return [
+            row
+            for row in self.session.exec(
+                select(DataRow)
+                .where(DataRow.dataset_id == dataset_id)
+                .where(DataRow.text_content.is_not(None))
+                .order_by(DataRow.created_at)
+            ).all()
+            if row.id not in excluded_row_ids and row.text_content
+        ][:limit]
 
     def _count_trainable_pos_labels(self, dataset_id: str) -> int:
         return len(
