@@ -8,13 +8,13 @@ from sqlmodel import SQLModel, Session
 from werkzeug.exceptions import HTTPException
 
 import app.database.models  # noqa: F401  (registers SQLModel tables)
-from app.api.data.controller import bp as data_bp
-from app.api.dataset.controller import bp as dataset_bp
+from app.api.data.routes import bp as data_bp
+from app.api.dataset.routes import bp as dataset_bp
 from app.api.dataset.service import DatasetService
 from app.api.dependencies import AppServices, SERVICES_CONFIG_KEY, close_db_session
-from app.api.labels.controller import bp as labels_bp
-from app.api.language.controller import bp as language_bp
-from app.api.research.controller import bp as research_bp
+from app.api.labels.routes import bp as labels_bp
+from app.api.language.routes import bp as language_bp
+from app.api.research.routes import bp as research_bp
 from app.config import Settings, get_settings
 from app.database.session import create_database_engine, engine as default_engine, get_db
 from app.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
