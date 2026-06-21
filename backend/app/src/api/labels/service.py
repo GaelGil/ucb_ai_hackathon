@@ -204,6 +204,7 @@ class LabelsService:
         source: ApiLabelSource | None = None,
         limit: int = 10,
         offset: int = 0,
+        needs_review: bool = False,
     ) -> tuple[list[ApiLabel], int]:
         self._get_dataset(dataset_id)
         filters = [Label.dataset_id == dataset_id]
@@ -214,7 +215,6 @@ class LabelsService:
             db_label_type = None
         if source is not None:
             filters.append(Label.source == LabelSource(source.value))
-        total = self.session.exec(select(func.count()).select_from(Label).where(*filters)).one()
         from app.src.api.mappers import label_to_api
 
         if db_label_type == LabelType.translation:
@@ -234,17 +234,21 @@ class LabelsService:
                     item[0].id,
                 ),
             )
-            page_records = ordered[offset : offset + limit]
             pending_by_row_id = self._pending_translation_suggestions_by_row_id(
                 dataset_id,
-                [label.data_row_id for label, _ in page_records],
+                [label.data_row_id for label, _ in ordered],
             )
+            if needs_review:
+                ordered = [(label, row_index) for label, row_index in ordered if label.data_row_id in pending_by_row_id]
+            total = len(ordered)
+            page_records = ordered[offset : offset + limit]
             labels = [
                 label_to_api(label, pending_suggestion=pending_by_row_id.get(label.data_row_id))
                 for label, _ in page_records
             ]
             return labels, total
 
+        total = self.session.exec(select(func.count()).select_from(Label).where(*filters)).one()
         statement = select(Label).where(*filters).order_by(Label.created_at, Label.id).offset(offset).limit(limit)
         labels = [label_to_api(label) for label in self.session.exec(statement).all()]
         return labels, total

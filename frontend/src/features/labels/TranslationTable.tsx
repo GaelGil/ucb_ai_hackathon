@@ -1,4 +1,19 @@
-import { Badge, Box, Button, Divider, Group, Modal, ScrollArea, Stack, Table, Text, Textarea } from "@mantine/core";
+import {
+  ActionIcon,
+  Badge,
+  Box,
+  Button,
+  Divider,
+  Group,
+  Modal,
+  ScrollArea,
+  SegmentedControl,
+  Stack,
+  Table,
+  Text,
+  Textarea,
+  Tooltip,
+} from "@mantine/core";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
 import { TbEye, TbWand } from "react-icons/tb";
@@ -16,6 +31,7 @@ import type {
   Suggestion,
   SuggestionStatus,
   TextDraftMap,
+  TranslationReviewFilter,
 } from "@/types/domain";
 
 import { SuggestionActions } from "./SuggestionActions";
@@ -26,12 +42,14 @@ export function TranslationTable({
   labelsPagination,
   labelsPageIndex,
   pendingSuggestionTotal,
+  reviewFilter,
   research,
   loading,
   working,
   onGenerate,
   onOpenDetail,
   onLabelsPageChange,
+  onReviewFilterChange,
   onDraftChange,
   onReview,
 }: {
@@ -40,12 +58,14 @@ export function TranslationTable({
   labelsPagination: PaginationMeta;
   labelsPageIndex: number;
   pendingSuggestionTotal: number;
+  reviewFilter: TranslationReviewFilter;
   research: ResearchArtifact | null;
   loading: boolean;
   working: boolean;
   onGenerate: () => void;
   onOpenDetail: (detail: DetailContent) => void;
   onLabelsPageChange: (pageIndex: number) => void;
+  onReviewFilterChange: (filter: TranslationReviewFilter) => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
 }) {
@@ -122,43 +142,19 @@ export function TranslationTable({
         cell: info => {
           const suggestion = info.row.original.pending_suggestion;
           if (!suggestion) {
-            return (
-              <Badge color="gray" radius="sm" variant="light">
-                No pending
-              </Badge>
-            );
+            return null;
           }
-          const draft = drafts[suggestion.id] ?? suggestion.suggested_text ?? "";
           return (
-            <Stack gap={6} miw={220}>
-              <Group gap="xs">
-                <Badge color={statusColor(suggestion.status)} radius="sm" variant="dot">
-                  {suggestion.status}
-                </Badge>
-                <Badge color="grape" radius="sm" variant="light">
-                  {formatPercent(suggestion.confidence)}
-                </Badge>
-              </Group>
-              <PreviewTextButton
-                fw={500}
-                text={draft}
-                title="Suggested Translation"
-                onOpen={() => setReviewingSuggestion(suggestion)}
-              />
-              <Button
-                leftSection={<TbEye aria-hidden="true" size={15} />}
-                onClick={() => setReviewingSuggestion(suggestion)}
-                size="compact-sm"
-                variant="light"
-              >
-                Review
-              </Button>
-            </Stack>
+            <Tooltip label="Review suggestion">
+              <ActionIcon aria-label="Review suggestion" onClick={() => setReviewingSuggestion(suggestion)} variant="light">
+                <TbEye aria-hidden="true" size={17} />
+              </ActionIcon>
+            </Tooltip>
           );
         },
       }),
     ];
-  }, [drafts, onOpenDetail]);
+  }, [onOpenDetail]);
 
   const labelTable = useReactTable({
     columns: labelColumns,
@@ -178,10 +174,21 @@ export function TranslationTable({
   return (
     <PaperPanel title="Translate" eyebrow="Labels, research, suggestions">
       <Stack gap="md">
-        <Group justify="space-between" wrap="wrap">
-          <Text c="dimmed" size="sm">
-            Saved labels: {labelsPagination.total} | Pending suggestions: {pendingSuggestionTotal}
-          </Text>
+        <Group align="center" justify="space-between" wrap="wrap">
+          <Group gap="sm" wrap="wrap">
+            <Text c="dimmed" size="sm">
+              Saved labels: {labelsPagination.total} | Pending suggestions: {pendingSuggestionTotal}
+            </Text>
+            <SegmentedControl
+              data={[
+                { label: "All", value: "all" },
+                { label: "Review", value: "needs_review" },
+              ]}
+              onChange={value => onReviewFilterChange(value as TranslationReviewFilter)}
+              size="xs"
+              value={reviewFilter}
+            />
+          </Group>
           <Button disabled={working || !research} leftSection={<TbWand aria-hidden="true" size={16} />} onClick={onGenerate}>
             Generate 5 Suggestions
           </Button>

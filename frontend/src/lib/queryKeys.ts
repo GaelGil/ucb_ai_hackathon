@@ -1,4 +1,4 @@
-import type { ResearchType, SuggestionStatus, SuggestionType } from "@/types/domain";
+import type { ResearchType, SuggestionStatus, SuggestionType, TranslationReviewFilter } from "@/types/domain";
 
 export const queryKeys = {
   datasets: ["datasets"] as const,
@@ -14,7 +14,12 @@ export const queryKeys = {
     offset: number,
   ) => [...queryKeys.suggestionsRoot(datasetId, type, status), limit, offset] as const,
   labelsRoot: (datasetId: string, type: SuggestionType) => [...queryKeys.workspace(datasetId), "labels", type] as const,
-  labels: (datasetId: string, type: SuggestionType, limit: number, offset: number) =>
-    [...queryKeys.labelsRoot(datasetId, type), limit, offset] as const,
+  labels: (
+    datasetId: string,
+    type: SuggestionType,
+    limit: number,
+    offset: number,
+    reviewFilter: TranslationReviewFilter = "all",
+  ) => [...queryKeys.labelsRoot(datasetId, type), limit, offset, reviewFilter] as const,
   research: (datasetId: string, type: ResearchType) => [...queryKeys.workspace(datasetId), "research", type] as const,
 };

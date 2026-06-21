@@ -169,3 +169,30 @@ def test_translation_labels_include_pending_suggestion_for_same_row(session) -> 
     label = next(label for label in labels if label.data_row_id == row.id)
     assert label.pending_suggestion is None
     assert label.value["text"] == "pending translation"
+
+
+def test_translation_labels_can_filter_to_pending_review_rows(session) -> None:
+    dataset_id = _create_translation_dataset(session, language_code="ga", language_name="Irish")
+    enforce_translation_split(session, language_codes=["ga"])
+
+    service = object.__new__(LabelsService)
+    service.session = session
+    row = service._candidate_text_rows(dataset_id, LabelType.translation, limit=1)[0]
+    suggestion = AiSuggestion(
+        dataset_id=dataset_id,
+        data_row_id=row.id,
+        label_type=LabelType.translation,
+        status=SuggestionStatus.pending,
+        original_value={"source_text": row.text_content, "text": "pending translation"},
+        confidence=0.8,
+        rationale="Pending translation suggestion.",
+    )
+    session.add(suggestion)
+    session.commit()
+
+    labels, total = service.list_labels(dataset_id, "translation", limit=10, offset=0, needs_review=True)
+
+    assert total == 1
+    assert len(labels) == 1
+    assert labels[0].data_row_id == row.id
+    assert labels[0].pending_suggestion is not None

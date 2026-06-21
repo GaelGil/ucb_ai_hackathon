@@ -11,6 +11,7 @@ import type {
   ResearchArtifact,
   ResearchType,
   SuggestionsResponse,
+  TranslationReviewFilter,
   WorkspacePagination,
   WorkspaceTab,
 } from "@/types/domain";
@@ -36,6 +37,7 @@ export function useWorkspaceData(
   activeTab: WorkspaceTab,
   activeResearchType: ResearchType,
   pagination: WorkspacePagination,
+  translationReviewFilter: TranslationReviewFilter,
 ) {
   const enabled = datasetId.length > 0;
   const researchPanelVisible = activeTab === "pos" || activeTab === "translate";
@@ -68,10 +70,10 @@ export function useWorkspaceData(
     placeholderData: keepPreviousData,
   });
   const translationLabelsQuery = useQuery({
-    queryKey: queryKeys.labels(datasetId, "translation", PAGE_SIZE, translationLabelOffset),
+    queryKey: queryKeys.labels(datasetId, "translation", PAGE_SIZE, translationLabelOffset, translationReviewFilter),
     queryFn: ({ signal }) =>
       api<LabelsResponse>(
-        `/datasets/${datasetId}/labels?type=translation&limit=${PAGE_SIZE}&offset=${translationLabelOffset}`,
+        `/datasets/${datasetId}/labels?type=translation&limit=${PAGE_SIZE}&offset=${translationLabelOffset}&needs_review=${translationReviewFilter === "needs_review"}`,
         { signal },
       ),
     enabled: enabled && activeTab === "translate",

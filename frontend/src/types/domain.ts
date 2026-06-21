@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 export type SourceType = "text" | "csv" | "txt" | "pdf" | "image";
 export type ImportKind = "generic" | "translation" | "pos";
 export type ResearchType = "pos" | "translation";
+export type TranslationReviewFilter = "all" | "needs_review";
 export type SuggestionType = "pos" | "ocr" | "translation" | "emotion" | "intention" | "text" | "custom";
 export type SuggestionStatus = "pending" | "accepted" | "denied" | "updated" | "approved" | "edited";
 export type LabelSource = "csv_import" | "human" | "ai_accepted" | "ai_updated";

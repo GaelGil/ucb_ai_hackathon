@@ -23,6 +23,7 @@ import type {
   SuggestionType,
   TextDraftMap,
   Toast,
+  TranslationReviewFilter,
   WorkspaceTab,
 } from "@/types/domain";
 
@@ -38,11 +39,12 @@ export function useWorkspaceController() {
   const [posSuggestionsPage, setPosSuggestionsPage] = useState(0);
   const [ocrSuggestionsPage, setOcrSuggestionsPage] = useState(0);
   const [translationLabelsPage, setTranslationLabelsPage] = useState(0);
+  const [translationReviewFilter, setTranslationReviewFilter] = useState<TranslationReviewFilter>("all");
   const workspaceData = useWorkspaceData(selectedDatasetId, activeTab, activeResearchType, {
     posSuggestions: posSuggestionsPage,
     ocrSuggestions: ocrSuggestionsPage,
     translationLabels: translationLabelsPage,
-  });
+  }, translationReviewFilter);
   const dashboard = workspaceData.dashboard;
   const suggestions = workspaceData.posSuggestions;
   const ocrSuggestions = workspaceData.ocrSuggestions;
@@ -101,10 +103,15 @@ export function useWorkspaceController() {
     setPosSuggestionsPage(0);
     setOcrSuggestionsPage(0);
     setTranslationLabelsPage(0);
+    setTranslationReviewFilter("all");
     if (!selectedDatasetId) {
       clearWorkspaceState();
     }
   }, [selectedDatasetId]);
+
+  useEffect(() => {
+    setTranslationLabelsPage(0);
+  }, [translationReviewFilter]);
 
   useEffect(() => {
     setPosSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.posSuggestionsPage.total)));
@@ -548,6 +555,7 @@ export function useWorkspaceController() {
     setToast,
     setTranslationDrafts,
     setTranslationLabelsPage,
+    setTranslationReviewFilter,
     setUploadFile,
     sidebarCollapsed,
     suggestions,
@@ -557,6 +565,7 @@ export function useWorkspaceController() {
     translationDrafts,
     translationLabels,
     translationLabelsPage,
+    translationReviewFilter,
     updateTokenDraft,
     uploadFile,
     uploadFileIsCsv,

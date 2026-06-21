@@ -148,12 +148,14 @@ export function App() {
                   labelsPagination={workspace.workspaceData.translationLabelsPage}
                   labelsPageIndex={workspace.translationLabelsPage}
                   pendingSuggestionTotal={workspace.dashboard?.suggestion_counts.translation ?? 0}
+                  reviewFilter={workspace.translationReviewFilter}
                   research={workspace.researchByType.translation}
                   loading={workspace.workspaceLoading}
                   working={workspace.working}
                   onGenerate={() => void workspace.generateTranslationSuggestions()}
                   onOpenDetail={workspace.openDetail}
                   onLabelsPageChange={workspace.setTranslationLabelsPage}
+                  onReviewFilterChange={workspace.setTranslationReviewFilter}
                   onDraftChange={(id, value) => workspace.setTranslationDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void workspace.reviewSuggestion(suggestion, action)}
                 />
