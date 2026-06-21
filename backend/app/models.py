@@ -159,6 +159,7 @@ class Label(BaseModel):
     source: LabelSource = LabelSource.HUMAN
     original_column_name: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
+    pending_suggestion: Suggestion | None = None
 
 
 class ResearchSource(BaseModel):
@@ -175,6 +176,7 @@ class ResearchArtifact(BaseModel):
     summary: str
     guidelines: list[str] = Field(default_factory=list)
     sources: list[ResearchSource] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     warnings: list[ProviderWarning] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
@@ -233,6 +235,7 @@ class TranslationSuggestionRequest(BaseModel):
 
 class OcrRequest(BaseModel):
     import_id: str | None = None
+    import_ids: list[str] | None = None
 
 
 class TranslationRequest(BaseModel):
@@ -244,6 +247,9 @@ class TranslationProviderResult(BaseModel):
     output_text: str
     provider: str
     model: str
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    rationale: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
     used_fallback: bool = False
     warning: ProviderWarning | None = None
 
@@ -253,6 +259,9 @@ class TranslationResponse(BaseModel):
     output_text: str
     provider: str
     model: str
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    rationale: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
     used_fallback: bool = False
     warning: ProviderWarning | None = None
 
@@ -297,14 +306,20 @@ class JobResponse(BaseModel):
 
 class SuggestionsResponse(BaseModel):
     suggestions: list[Suggestion]
+    total: int
+    limit: int
+    offset: int
 
 
 class LabelsResponse(BaseModel):
     labels: list[Label]
+    total: int
+    limit: int
+    offset: int
 
 
 class ResearchResponse(BaseModel):
-    research: ResearchArtifact
+    research: ResearchArtifact | None
     job: Job
 
 

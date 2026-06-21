@@ -15,6 +15,10 @@ class SupabaseStorage:
     def bucket(self) -> str:
         return self.settings.supabase_storage_bucket
 
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.settings.supabase_url and self.settings.supabase_service_role_key)
+
     def upload(
         self,
         *,
@@ -22,7 +26,7 @@ class SupabaseStorage:
         data: bytes,
         content_type: str | None = None,
     ) -> tuple[str, str]:
-        if not self.settings.supabase_url or not self.settings.supabase_service_role_key:
+        if not self.is_configured:
             return self.bucket, path
 
         base_url = self.settings.supabase_url.rstrip("/")
@@ -40,6 +44,21 @@ class SupabaseStorage:
             response.raise_for_status()
 
         return self.bucket, path
+
+    def download(self, *, bucket: str, path: str) -> bytes:
+        if not self.is_configured:
+            raise RuntimeError("Supabase Storage is not configured and the uploaded asset was not stored inline.")
+
+        base_url = self.settings.supabase_url.rstrip("/")
+        url = f"{base_url}/storage/v1/object/{bucket}/{path}"
+        headers = {
+            "Authorization": f"Bearer {self.settings.supabase_service_role_key}",
+            "apikey": self.settings.supabase_service_role_key,
+        }
+        with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
+            response = client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.content
 
 
 def storage_path_for_upload(dataset_id: str, import_id: str, filename: str) -> str:

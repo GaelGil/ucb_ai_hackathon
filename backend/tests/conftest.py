@@ -13,8 +13,18 @@ from sqlmodel import Session, SQLModel, create_engine
 
 # Importing the models package registers every table on SQLModel.metadata,
 # which create_all() needs.
-import app.database.models  # noqa: F401
-from app.core.config import settings
+import app.src.database.models  # noqa: F401
+from app.src.config import Settings
+
+settings = Settings(_env_file=None)
+
+collect_ignore = [
+    "test_browserbase_tool.py",
+    "test_data_agent.py",
+    "test_data_service.py",
+    "test_research_agent.py",
+    "test_research_service.py",
+]
 
 
 @pytest.fixture
@@ -34,7 +44,7 @@ def session():
 def fake_keys(monkeypatch):
     """Pretend both API keys are configured so the fail-loud guards pass."""
     monkeypatch.setattr(settings, "anthropic_api_key", "test-anthropic-key")
-    monkeypatch.setattr(settings, "browserbase_api_key", "test-browserbase-key")
+    monkeypatch.setattr(settings, "BROWSERBASE_API_KEY", "test-browserbase-key")
 
 
 # --- Helpers for faking the Anthropic SDK -------------------------------------

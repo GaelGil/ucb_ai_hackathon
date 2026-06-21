@@ -1,9 +1,86 @@
+from dataclasses import replace
+import io
+
 import pytest
 from sqlmodel import create_engine
 from sqlmodel.pool import StaticPool
 
 from app.src.api import create_app
+from app.src.api.dependencies import SERVICES_CONFIG_KEY
 from app.src.config import Settings
+from app.src.models import ResearchArtifact, ResearchSource, TokenSuggestion, TranslationProviderResult
+
+
+class FakeResearchProvider:
+    provider = "fake-browserbase"
+    model_name = "fake-claude"
+
+    def create_research(self, dataset, samples, research_type="pos"):
+        return ResearchArtifact(
+            dataset_id=dataset.id,
+            language_code=dataset.language_code,
+            type=research_type,
+            summary=f"{dataset.language_name} {research_type} notes",
+            guidelines=["Use reviewer examples first."],
+            sources=[ResearchSource(title="Fake source", url="https://example.test", excerpt="Fake excerpt")],
+            metadata={
+                "provider": self.provider,
+                "model": self.model_name,
+                "evaluation": {"score": 0.9, "feedback": "Useful for tests."},
+            },
+        )
+
+
+class FakePosProvider:
+    provider = "fake-anthropic"
+    model_name = "fake-claude"
+
+    def suggest(self, text, research=None):
+        tokens = text.split()
+        return [
+            TokenSuggestion(
+                index=index,
+                token=token,
+                suggested_pos="NOUN",
+                confidence=0.8,
+                rationale="Fake POS suggestion.",
+            )
+            for index, token in enumerate(tokens)
+        ]
+
+
+class FakeTranslationProvider:
+    provider = "fake-anthropic"
+    model_name = "fake-claude"
+
+    def suggest(self, *, text, direction, research, row_metadata=None):
+        return TranslationProviderResult(
+            output_text=f"translated: {text}",
+            provider=self.provider,
+            model=self.model_name,
+            confidence=0.8,
+            rationale="Fake translation suggestion.",
+            metadata={"evaluation": {"score": 0.8, "feedback": "Preserves meaning enough for tests."}},
+        )
+
+    def translate(self, text, direction="spanish_to_nahuatl"):
+        return TranslationProviderResult(
+            output_text="miak xochitl istak" if text == "muchas flores son blancas" else f"translated: {text}",
+            provider="local-demo",
+            model="fake-demo",
+            confidence=0.35,
+            rationale="Fake demo fallback.",
+            used_fallback=True,
+            warning={"provider": "aws-neuron-endpoint", "stage": "translation", "message": "Fake warning", "fallback": True},
+        )
+
+
+class FakeOcrProvider:
+    provider = "fake-anthropic"
+    model_name = "fake-claude"
+
+    def extract(self, asset):
+        return "fake extracted text", 0.8, "Fake OCR suggestion."
 
 
 @pytest.fixture
@@ -13,8 +90,23 @@ def client():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    settings = Settings(database_url="sqlite://", seed_demo_data=True)
-    return create_app(settings=settings, engine=engine, create_tables=True).test_client()
+    settings = Settings(
+        _env_file=None,
+        database_url="sqlite://",
+        seed_demo_data=True,
+        agent_jobs_background=False,
+        arize_enabled=False,
+        phoenix_enabled=False,
+    )
+    app = create_app(settings=settings, engine=engine, create_tables=True)
+    app.config[SERVICES_CONFIG_KEY] = replace(
+        app.config[SERVICES_CONFIG_KEY],
+        research_provider=FakeResearchProvider(),
+        pos_provider=FakePosProvider(),
+        translation_provider=FakeTranslationProvider(),
+        ocr_provider=FakeOcrProvider(),
+    )
+    return app.test_client()
 
 
 def test_text_pos_research_review_and_training_flow(client) -> None:
@@ -64,14 +156,15 @@ def test_research_is_cached_per_dataset_language(client) -> None:
     assert second["job"]["metadata"]["cached"] is True
 
 
-def test_research_fallback_is_visible_in_metadata(client) -> None:
+def test_research_provider_metadata_is_visible(client) -> None:
     dataset = client.get("/datasets").get_json()[0]
 
     response = client.post(f"/datasets/{dataset['id']}/research").get_json()
 
-    assert response["job"]["metadata"]["used_fallback"] is True
-    assert response["job"]["metadata"]["warnings"]
-    assert response["research"]["warnings"]
+    assert response["job"]["metadata"]["provider"] == "fake-browserbase"
+    assert response["job"]["metadata"]["model"] == "fake-claude"
+    assert response["research"]["metadata"]["evaluation"]["score"] == 0.9
+    assert response["research"]["warnings"] == []
 
 
 def test_research_is_separate_by_type(client) -> None:
@@ -84,6 +177,18 @@ def test_research_is_separate_by_type(client) -> None:
     assert pos["research"]["type"] == "pos"
     assert translation["research"]["type"] == "translation"
     assert translation["job"]["metadata"]["research_type"] == "translation"
+
+
+def test_missing_research_returns_null(client) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "No research yet", "language_code": "none", "language_name": "None"},
+    ).get_json()
+
+    response = client.get(f"/datasets/{dataset['id']}/research", query_string={"type": "translation"})
+
+    assert response.status_code == 200
+    assert response.get_json() is None
 
 
 def test_pos_suggestions_require_pos_research(client) -> None:
@@ -185,6 +290,28 @@ def test_translation_suggestions_skip_existing_translation_labels_and_can_be_rev
     assert "nochanehua tlahtoa nahuatlahtolli" in values
 
 
+def test_ocr_uses_selected_image_import(client) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "OCR pilot", "language_code": "ocr", "language_name": "OCR"},
+    ).get_json()
+    uploaded = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        data={"file": (io.BytesIO(b"fake image bytes"), "note.png", "image/png")},
+        content_type="multipart/form-data",
+    ).get_json()
+
+    response = client.post(
+        f"/datasets/{dataset['id']}/ocr",
+        json={"import_ids": [uploaded["import_record"]["id"]]},
+    ).get_json()
+
+    assert response["job"]["status"] == "succeeded"
+    assert response["job"]["metadata"]["provider"] == "fake-anthropic"
+    assert len(response["suggestions"]) == 1
+    assert response["suggestions"][0]["suggested_text"] == "fake extracted text"
+
+
 def test_csv_import_uses_text_column(client) -> None:
     dataset = client.get("/datasets").get_json()[0]
 
@@ -218,6 +345,38 @@ def test_csv_import_can_create_labels(client) -> None:
     assert [label["data_text"] for label in translations] == ["hello world", "second row"]
 
 
+def test_labels_endpoint_paginates(client) -> None:
+    dataset = client.get("/datasets").get_json()[0]
+    rows = "\n".join(f"{index},source {index},target {index}" for index in range(25))
+
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={
+            "source_type": "csv",
+            "text": f"id,text,translation\n{rows}\n",
+        },
+    )
+
+    first = client.get(
+        f"/datasets/{dataset['id']}/labels",
+        query_string={"type": "translation", "limit": 10, "offset": 0},
+    ).get_json()
+    second = client.get(
+        f"/datasets/{dataset['id']}/labels",
+        query_string={"type": "translation", "limit": 10, "offset": 10},
+    ).get_json()
+
+    assert first["total"] == 25
+    assert first["limit"] == 10
+    assert first["offset"] == 0
+    assert len(first["labels"]) == 10
+    assert second["total"] == 25
+    assert second["limit"] == 10
+    assert second["offset"] == 10
+    assert len(second["labels"]) == 10
+    assert {label["id"] for label in first["labels"]}.isdisjoint({label["id"] for label in second["labels"]})
+
+
 def test_translation_csv_import_uses_required_columns(client) -> None:
     dataset = client.get("/datasets").get_json()[0]
 
@@ -248,6 +407,28 @@ def test_translation_csv_import_uses_required_columns(client) -> None:
         "src": "es",
         "target": "nah",
     }
+
+
+def test_multipart_translation_csv_import_completes_synchronously(client) -> None:
+    dataset = client.get("/datasets").get_json()[0]
+    csv_text = (
+        "text,translation,source,src,target,source_id_or_reference\n"
+        "hello world,tlasohkamati,axolotl,es,nah,1\n"
+        "second row,ome,axolotl,es,nah,2\n"
+    )
+
+    response = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        data={
+            "import_kind": "translation",
+            "file": (io.BytesIO(csv_text.encode()), "sample.csv", "text/csv"),
+        },
+        content_type="multipart/form-data",
+    ).get_json()
+
+    assert response["job"]["status"] == "succeeded"
+    assert response["import_record"]["item_count"] == 2
+    assert response["import_record"]["label_count"] == 2
 
 
 def test_pos_csv_import_accepts_text_tags_and_json_list_tags(client) -> None:

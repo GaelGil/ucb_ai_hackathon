@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from flask import current_app, g
-from sqlalchemy import Engine
 from sqlmodel import Session
+from sqlalchemy import Engine
 
 from app.src.api.data.service import DataService
 from app.src.api.dataset.service import DatasetService
@@ -22,8 +22,8 @@ SERVICES_CONFIG_KEY = "APP_SERVICES"
 
 @dataclass(frozen=True)
 class AppServices:
+    db_engine: Engine
     settings: Settings
-    engine: Engine
     tracer: Tracer
     research_provider: BrowserbaseResearchProvider
     ocr_provider: OCRProvider
@@ -44,7 +44,7 @@ def get_db_session() -> Session:
     app-context teardown registered by ``create_app``.
     """
     if "db_session" not in g:
-        g.db_session = Session(get_services().engine)
+        g.db_session = Session(get_services().db_engine)
     return g.db_session
 
 

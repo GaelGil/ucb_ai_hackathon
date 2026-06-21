@@ -16,7 +16,7 @@ from app.src.api.labels.controller import bp as labels_bp
 from app.src.api.language.controller import bp as language_bp
 from app.src.api.research.controller import bp as research_bp
 from app.src.config import Settings, get_settings
-from app.src.database.session import create_database_engine
+from app.src.database.session import create_database_engine, engine as default_engine, get_db
 from app.src.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
 from app.src.repositories import NotFoundError
 from app.src.storage import SupabaseStorage
@@ -30,26 +30,27 @@ def create_app(
     create_tables: bool | None = None,
 ) -> Flask:
     del repository
+    custom_settings = settings is not None
     settings = settings or get_settings()
-    engine = engine or create_database_engine(settings)
+    db_engine = engine or (create_database_engine(settings) if custom_settings else default_engine)
     should_create_tables = settings.create_db_on_startup if create_tables is None else create_tables
     if should_create_tables:
-        SQLModel.metadata.create_all(engine)
+        SQLModel.metadata.create_all(db_engine)
 
     tracer = Tracer(settings)
     services = AppServices(
+        db_engine=db_engine,
         settings=settings,
-        engine=engine,
         tracer=tracer,
-        research_provider=BrowserbaseResearchProvider(settings=settings),
-        ocr_provider=OCRProvider(),
-        pos_provider=PosAnnotationProvider(),
-        translation_provider=TranslationProvider(settings=settings),
+        research_provider=BrowserbaseResearchProvider(settings=settings, tracer=tracer),
+        ocr_provider=OCRProvider(settings=settings, tracer=tracer),
+        pos_provider=PosAnnotationProvider(settings=settings, tracer=tracer),
+        translation_provider=TranslationProvider(settings=settings, tracer=tracer),
         storage=SupabaseStorage(settings),
     )
 
     if settings.seed_demo_data:
-        with Session(engine) as session:
+        with Session(db_engine) as session:
             DatasetService(session=session).seed_demo_dataset()
 
     app = Flask(__name__)

@@ -93,7 +93,7 @@ def data_row_to_text_item(row: DataRow) -> api.TextItem:
     )
 
 
-def label_to_api(label: Label) -> api.Label:
+def label_to_api(label: Label, pending_suggestion: AiSuggestion | None = None) -> api.Label:
     data_row = getattr(label, "data_row", None)
     return api.Label(
         id=label.id,
@@ -108,6 +108,7 @@ def label_to_api(label: Label) -> api.Label:
         source=label_source_to_api(label.source),
         original_column_name=label.original_column_name,
         created_at=label.created_at,
+        pending_suggestion=ai_suggestion_to_api(pending_suggestion) if pending_suggestion is not None else None,
     )
 
 
@@ -135,6 +136,7 @@ def research_to_api(dataset: Dataset, language: Language, research: Research) ->
         summary=research.notes or "",
         guidelines=[str(item) for item in research.research_metadata.get("guidelines", [])],
         sources=[_research_source(source) for source in research.sources],
+        metadata=research.research_metadata,
         warnings=[api.ProviderWarning.model_validate(warning) for warning in warnings],
         created_at=research.created_at,
         updated_at=research.updated_at,

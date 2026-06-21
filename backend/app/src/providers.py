@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -14,364 +17,847 @@ from app.src.models import (
     ResearchSource,
     TokenSuggestion,
     TranslationProviderResult,
+    UPOS_TAGS,
     UploadedAsset,
 )
+from app.src.tracing import Tracer
+
+
+@dataclass(frozen=True)
+class JsonCompletion:
+    data: dict[str, Any]
+    usage: dict[str, Any]
+
+
+class AnthropicClient:
+    provider = "anthropic"
+
+    def __init__(self, settings: Settings | None = None, tracer: Tracer | None = None) -> None:
+        self.settings = settings or get_settings()
+        self.tracer = tracer or Tracer(self.settings)
+        self.api_key = self.settings.anthropic_api_key
+        self.model = self.settings.anthropic_model
+        self.base_url = self.settings.anthropic_base_url.rstrip("/")
+        self._client = None
+
+    def complete_json(
+        self,
+        *,
+        task_name: str,
+        system: str,
+        prompt: str,
+        max_tokens: int | None = None,
+    ) -> JsonCompletion:
+        print(
+            "[research-debug] anthropic request starting "
+            f"task={task_name} model={self.model} prompt_chars={len(prompt)}",
+            flush=True,
+        )
+        payload = self._message_payload(
+            system=system,
+            content=[{"type": "text", "text": prompt}],
+            max_tokens=max_tokens,
+        )
+        with self.tracer.span("anthropic.request", task=task_name, model=self.model):
+            response = self._post_message(payload, task_name)
+        text = self._response_text(response)
+        usage = self._usage(response)
+        print(
+            "[research-debug] anthropic response received "
+            f"task={task_name} response_chars={len(text)} usage={usage}",
+            flush=True,
+        )
+        parsed = self._parse_json(text, task_name)
+        print(
+            "[research-debug] anthropic json parsed "
+            f"task={task_name} keys={sorted(parsed.keys())}",
+            flush=True,
+        )
+        return JsonCompletion(data=parsed, usage=usage)
+
+    def complete_vision_json(
+        self,
+        *,
+        task_name: str,
+        system: str,
+        prompt: str,
+        image_bytes: bytes,
+        media_type: str,
+        max_tokens: int | None = None,
+    ) -> JsonCompletion:
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        payload = self._message_payload(
+            system=system,
+            content=[
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": encoded,
+                    },
+                },
+                {"type": "text", "text": prompt},
+            ],
+            max_tokens=max_tokens,
+        )
+        with self.tracer.span("anthropic.request", task=task_name, model=self.model, media_type=media_type):
+            response = self._post_message(payload, task_name)
+        return JsonCompletion(data=self._parse_json(self._response_text(response), task_name), usage=self._usage(response))
+
+    def evaluate(
+        self,
+        *,
+        task_name: str,
+        rubric: str,
+        input_payload: dict[str, Any],
+        output_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        completion = self.complete_json(
+            task_name=f"evaluator_{task_name}",
+            system="You are an LLM-as-judge evaluator. Return only valid JSON.",
+            prompt=json.dumps(
+                {
+                    "evaluator_name": task_name,
+                    "rubric": rubric,
+                    "input": input_payload,
+                    "output": output_payload,
+                    "required_json_shape": {
+                        "score": 0.0,
+                        "label": "pass|warn|fail",
+                        "feedback": "brief actionable feedback",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            max_tokens=500,
+        )
+        data = completion.data
+        return {
+            "name": task_name,
+            "kind": "llm",
+            "score": self._score(data.get("score")),
+            "label": str(data.get("label") or "warn"),
+            "feedback": str(data.get("feedback") or data.get("explanation") or ""),
+            "usage": completion.usage,
+        }
+
+    def _message_payload(self, *, system: str, content: list[dict[str, Any]], max_tokens: int | None) -> dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not configured.")
+        return {
+            "model": self.model,
+            "max_tokens": max_tokens or self.settings.anthropic_max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": content}],
+        }
+
+    def _post_message(self, payload: dict[str, Any], task_name: str) -> dict[str, Any]:
+        try:
+            return self._anthropic_client().messages.create(**payload)
+        except Exception as exc:
+            print(
+                "[research-debug] anthropic request error "
+                f"task={task_name} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            raise RuntimeError(f"Anthropic {task_name} failed: {exc}") from exc
+
+    def _anthropic_client(self):
+        if self._client is None:
+            if not self.api_key:
+                raise RuntimeError("ANTHROPIC_API_KEY is not configured.")
+            from anthropic import Anthropic
+
+            kwargs: dict[str, Any] = {
+                "api_key": self.api_key,
+                "timeout": self.settings.llm_timeout_seconds,
+            }
+            if self.base_url and self.base_url != "https://api.anthropic.com":
+                kwargs["base_url"] = self.base_url
+            self._client = Anthropic(**kwargs)
+        return self._client
+
+    def _response_text(self, response: object) -> str:
+        parts = []
+        for item in getattr(response, "content", []) or []:
+            item_type = getattr(item, "type", None)
+            text = getattr(item, "text", None)
+            if item_type == "text" and text:
+                parts.append(str(text))
+        text = "\n".join(parts).strip()
+        if not text:
+            raise RuntimeError("Anthropic returned an empty text response.")
+        return text
+
+    def _usage(self, response: object) -> dict[str, Any]:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        if hasattr(usage, "model_dump"):
+            return usage.model_dump()
+        if isinstance(usage, dict):
+            return usage
+        return {
+            key: getattr(usage, key)
+            for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+            if getattr(usage, key, None) is not None
+        }
+
+    def _parse_json(self, text: str, task_name: str) -> dict[str, Any]:
+        cleaned = text.strip()
+        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+        if fenced:
+            cleaned = fenced.group(1)
+        else:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                cleaned = cleaned[start : end + 1]
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Anthropic {task_name} returned invalid JSON.") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Anthropic {task_name} returned JSON that was not an object.")
+        return parsed
+
+    def _score(self, value: object) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(1.0, score))
 
 
 class BrowserbaseResearchProvider:
+    provider = "browserbase"
+
     def __init__(
         self,
         settings: Settings | None = None,
         api_key: str | None = None,
-        llm: "ConfigurableLLMClient | None" = None,
+        llm: AnthropicClient | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
         self.settings = settings or get_settings()
+        self.tracer = tracer or Tracer(self.settings)
         self.api_key = api_key or self.settings.BROWSERBASE_API_KEY
-        self.llm = llm or ConfigurableLLMClient(self.settings)
-        self.base_url = self.settings.browserbase_base_url
+        self.llm = llm or AnthropicClient(self.settings, self.tracer)
+        self.base_url = self.settings.browserbase_base_url.rstrip("/")
+        self.model_name = self.llm.model
 
     def create_research(self, dataset: Dataset, samples: list[str], research_type: str = "pos") -> ResearchArtifact:
+        print(
+            "[research-debug] BrowserbaseResearchProvider.create_research reached "
+            f"dataset_id={dataset.id} language={dataset.language_code} type={research_type} sample_count={len(samples)}",
+            flush=True,
+        )
         if not self.api_key:
-            return self._fallback_research(
-                dataset,
-                samples,
-                research_type,
-                self._warning("browserbase", "search", "BROWSERBASE_API_KEY is not configured."),
-            )
+            print("[research-debug] browserbase api key missing", flush=True)
+            raise RuntimeError("BROWSERBASE_API_KEY is not configured.")
 
         query = self._research_query(dataset, research_type)
-        headers = {"x-bb-api-key": self.api_key, "Content-Type": "application/json"}
-        sources: list[ResearchSource] = []
-        try:
-            with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
-                search_response = client.post(
-                    f"{self.base_url}/v1/search", headers=headers, json={"query": query}
-                )
-                search_response.raise_for_status()
-                results = self._extract_search_results(search_response.json())
-                for result in results[:3]:
-                    fetched = client.post(
-                        f"{self.base_url}/v1/fetch",
-                        headers=headers,
-                        json={
-                            "url": result["url"],
-                            "format": "markdown",
-                            "allowRedirects": True,
-                        },
-                    )
-                    if fetched.status_code < 400:
-                        content = fetched.json().get("content", "")
-                        sources.append(
-                            ResearchSource(
-                                title=result.get("title") or result["url"],
-                                url=result["url"],
-                                excerpt=str(content)[:900],
-                            )
-                        )
-        except Exception as exc:
-            return self._fallback_research(
-                dataset,
-                samples,
-                research_type,
-                self._warning("browserbase", "search", f"Browserbase research failed: {exc}"),
-            )
-
+        print(
+            "[research-debug] research query built "
+            f"dataset_id={dataset.id} type={research_type} query={query!r}",
+            flush=True,
+        )
+        sources, warnings = self._search_and_fetch(query)
+        print(
+            "[research-debug] browserbase search/fetch complete "
+            f"dataset_id={dataset.id} type={research_type} source_count={len(sources)}",
+            flush=True,
+        )
         if not sources:
-            return self._fallback_research(
-                dataset,
-                samples,
-                research_type,
-                self._warning("browserbase", "fetch", "Browserbase returned no usable sources."),
+            print(
+                "[research-debug] browserbase returned no usable sources "
+                f"dataset_id={dataset.id} type={research_type}",
+                flush=True,
             )
+            raise RuntimeError("Browserbase returned no usable sources.")
 
-        summary, warning = self.llm.summarize_research(dataset, samples, sources, research_type)
+        prompt = self._research_prompt(dataset, samples, sources, research_type)
+        print(
+            "[research-debug] calling anthropic for research summary "
+            f"dataset_id={dataset.id} type={research_type} prompt_chars={len(prompt)} source_count={len(sources)}",
+            flush=True,
+        )
+        completion = self.llm.complete_json(
+            task_name=f"{research_type}_research",
+            system="You are a careful low-resource language research assistant. Return only valid JSON.",
+            prompt=prompt,
+        )
+        data = completion.data
+        summary = str(data.get("summary") or "").strip()
+        if not summary:
+            print(
+                "[research-debug] anthropic research response missing summary "
+                f"dataset_id={dataset.id} type={research_type} keys={sorted(data.keys())}",
+                flush=True,
+            )
+            raise RuntimeError("Anthropic research response did not include a summary.")
+
+        guidelines = self._string_list(data.get("guidelines")) or self._guidelines(research_type)
+        print(
+            "[research-debug] research artifact built "
+            f"dataset_id={dataset.id} type={research_type} summary_chars={len(summary)} "
+            f"guideline_count={len(guidelines)}",
+            flush=True,
+        )
+        metadata = {
+            "provider": self.provider,
+            "llm_provider": self.llm.provider,
+            "model": self.llm.model,
+            "query": query,
+            "examples": data.get("examples") if isinstance(data.get("examples"), list) else [],
+            "evaluation": data.get("evaluation") if isinstance(data.get("evaluation"), dict) else {},
+            "language_profile": data.get("language_profile") or "",
+            "task_notes": data.get("task_notes") or "",
+            "usage": completion.usage,
+        }
+        if warnings:
+            metadata["source_mode"] = "browserbase_search_fallback"
         return ResearchArtifact(
             dataset_id=dataset.id,
             language_code=dataset.language_code,
             type=research_type,
             summary=summary,
-            guidelines=self._guidelines(research_type),
+            guidelines=guidelines,
             sources=sources,
-            warnings=[warning] if warning else [],
+            metadata=metadata,
+            warnings=warnings,
         )
+
+    def evaluate_research(
+        self,
+        dataset: Dataset,
+        samples: list[str],
+        artifact: ResearchArtifact,
+        research_type: str,
+    ) -> dict[str, Any]:
+        print(
+            "[research-debug] calling anthropic research evaluator "
+            f"dataset_id={dataset.id} type={research_type} source_count={len(artifact.sources)}",
+            flush=True,
+        )
+        return self.llm.evaluate(
+            task_name=f"{research_type}_research_quality",
+            rubric=(
+                "Score whether the research notes are grounded in provided sources, useful for the selected task, "
+                "specific to the language, and actionable for a human reviewer. Higher is better."
+            ),
+            input_payload={
+                "language": dataset.language_name,
+                "language_code": dataset.language_code,
+                "research_type": research_type,
+                "samples": samples[:8],
+                "sources": [source.model_dump() for source in artifact.sources],
+            },
+            output_payload={
+                "summary": artifact.summary,
+                "guidelines": artifact.guidelines,
+                "metadata": artifact.metadata,
+            },
+        )
+
+    def _search_and_fetch(self, query: str) -> tuple[list[ResearchSource], list[ProviderWarning]]:
+        headers = {"x-bb-api-key": self.api_key or "", "Content-Type": "application/json"}
+        with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
+            with self.tracer.span("browserbase.search", query=query, num_results=6):
+                print(
+                    "[research-debug] executing browserbase search tool "
+                    f"url={self.base_url}/v1/search query={query!r}",
+                    flush=True,
+                )
+                search_response = client.post(
+                    f"{self.base_url}/v1/search",
+                    headers=headers,
+                    json={"query": query, "numResults": 6},
+                )
+                search_response.raise_for_status()
+                print(
+                    "[research-debug] browserbase search tool response "
+                    f"status={search_response.status_code} bytes={len(search_response.content)}",
+                    flush=True,
+                )
+            results = self._extract_search_results(search_response.json())
+            print(
+                "[research-debug] browserbase search results parsed "
+                f"result_count={len(results)}",
+                flush=True,
+            )
+
+            sources: list[ResearchSource] = []
+            fetch_errors: list[str] = []
+            for result in results[:4]:
+                try:
+                    with self.tracer.span("browserbase.fetch", url=result["url"]):
+                        print(
+                            "[research-debug] executing browserbase fetch tool "
+                            f"url={result['url']}",
+                            flush=True,
+                        )
+                        fetched = client.post(
+                            f"{self.base_url}/v1/fetch",
+                            headers=headers,
+                            json={"url": result["url"], "format": "markdown", "allowRedirects": True},
+                        )
+                        fetched.raise_for_status()
+                        print(
+                            "[research-debug] browserbase fetch tool response "
+                            f"url={result['url']} status={fetched.status_code} bytes={len(fetched.content)}",
+                            flush=True,
+                        )
+                    payload = fetched.json()
+                    content = str(payload.get("content") or "").strip()
+                    if content:
+                        sources.append(
+                            ResearchSource(
+                                title=result.get("title") or result["url"],
+                                url=result["url"],
+                                excerpt=self._compact(content, 1400),
+                            )
+                        )
+                        print(
+                            "[research-debug] browserbase source accepted "
+                            f"url={result['url']} content_chars={len(content)}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "[research-debug] browserbase source skipped empty content "
+                            f"url={result['url']}",
+                            flush=True,
+                        )
+                        fetch_errors.append(f"{result['url']}: empty content")
+                except Exception as exc:
+                    fetch_errors.append(f"{result.get('url')}: {type(exc).__name__}: {exc}")
+                    print(
+                        "[research-debug] browserbase fetch tool error "
+                        f"url={result.get('url')} error={type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                    continue
+        if sources:
+            return sources, []
+
+        fallback_sources = self._fallback_search_sources(results, query)
+        if fallback_sources:
+            first_error = fetch_errors[0] if fetch_errors else "no fetched page content"
+            warning = ProviderWarning(
+                provider=self.provider,
+                stage="browserbase.fetch",
+                message=(
+                    "Browserbase fetch returned no usable page content; using Browserbase search results only. "
+                    f"First fetch issue: {first_error}"
+                ),
+                fallback=True,
+            )
+            print(
+                "[research-debug] browserbase fetch fallback activated "
+                f"source_count={len(fallback_sources)} fetch_issue_count={len(fetch_errors)}",
+                flush=True,
+            )
+            return fallback_sources, [warning]
+
+        return [], []
 
     def _research_query(self, dataset: Dataset, research_type: str) -> str:
         if research_type == "translation":
             return (
-                f"{dataset.language_name} language Spanish translation parallel corpus "
-                "orthography grammar morphology translation notes"
+                f"{dataset.language_name} language translation examples grammar orthography "
+                "Wikipedia dictionary parallel corpus"
             )
         return (
-            f"{dataset.language_name} language part of speech grammar annotation "
-            "Universal Dependencies POS morphology"
+            f"{dataset.language_name} language parts of speech grammar morphology "
+            "Universal Dependencies Wikipedia examples"
+        )
+
+    def _research_prompt(
+        self,
+        dataset: Dataset,
+        samples: list[str],
+        sources: list[ResearchSource],
+        research_type: str,
+    ) -> str:
+        source_payload = [source.model_dump() for source in sources]
+        task = (
+            "translation guidance, source/target language considerations, examples, and review cautions"
+            if research_type == "translation"
+            else "part-of-speech tagging guidance using Universal Dependencies UPOS tags"
+        )
+        return json.dumps(
+            {
+                "language": dataset.language_name,
+                "language_code": dataset.language_code,
+                "task": task,
+                "uploaded_samples": samples[:12],
+                "sources": source_payload,
+                "required_json_shape": {
+                    "summary": "short research notes for the reviewer",
+                    "language_profile": "what type of language this is and important grammar facts",
+                    "task_notes": "task-specific notes",
+                    "guidelines": ["concise actionable guideline"],
+                    "examples": ["short example relevant to the task"],
+                    "evaluation": {
+                        "score": 0.0,
+                        "feedback": "judge whether the notes are grounded, useful, and task-specific",
+                    },
+                },
+            },
+            ensure_ascii=False,
         )
 
     def _guidelines(self, research_type: str) -> list[str]:
         if research_type == "translation":
             return [
-                "Preserve the source sentence meaning before attempting literal word-by-word alignment.",
-                "Use existing reviewer-approved translations as stronger evidence than generated suggestions.",
+                "Preserve meaning before literal word order.",
+                "Use uploaded reviewer examples as stronger evidence than web examples.",
                 "Keep named entities, numbers, and punctuation consistent unless the target language convention differs.",
-                "Flag uncertain translations for human review instead of over-normalizing low-resource forms.",
+                "Flag uncertainty in the rationale for human review.",
             ]
         return [
             "Use Universal Dependencies UPOS tags for every token.",
-            "Prefer language-specific grammar notes from the cached research when the surface form is ambiguous.",
-            "Mark uncertain or borrowed words as X only when no stronger UPOS category is justified.",
-            "Keep punctuation as PUNCT and numerals as NUM.",
+            "Use the cached language notes when a form is ambiguous.",
+            "Tag punctuation as PUNCT and numerals as NUM.",
+            "Use X only when no stronger UPOS category is justified.",
         ]
 
     def _extract_search_results(self, payload: dict[str, Any]) -> list[dict[str, str]]:
-        candidates = (
-            payload.get("results")
-            or payload.get("data")
-            or payload.get("organic")
-            or []
-        )
+        candidates = payload.get("results") or payload.get("data") or payload.get("organic") or []
         results: list[dict[str, str]] = []
         for item in candidates:
+            if not isinstance(item, dict):
+                continue
             url = item.get("url") or item.get("link")
             if url:
-                results.append({"url": url, "title": item.get("title", url)})
+                excerpt = (
+                    item.get("excerpt")
+                    or item.get("snippet")
+                    or item.get("description")
+                    or item.get("content")
+                    or item.get("text")
+                    or ""
+                )
+                results.append({"url": str(url), "title": str(item.get("title") or url), "excerpt": str(excerpt)})
         return results
 
-    def _fallback_research(
-        self,
-        dataset: Dataset,
-        samples: list[str],
-        research_type: str = "pos",
-        warning: ProviderWarning | None = None,
-    ) -> ResearchArtifact:
-        sample_preview = (
-            "; ".join(samples[:3]) if samples else "No samples uploaded yet."
-        )
-        if research_type == "translation":
-            return ResearchArtifact(
-                dataset_id=dataset.id,
-                language_code=dataset.language_code,
-                type=research_type,
-                summary=(
-                    f"{dataset.language_name} translation profile for this dataset. "
-                    f"Use uploaded examples as local evidence for Spanish-to-{dataset.language_name} suggestions: "
-                    f"{sample_preview}"
-                ),
-                guidelines=self._guidelines(research_type),
-                sources=[
-                    ResearchSource(
-                        title="Dataset translation samples",
-                        url="local://uploaded-samples",
-                        excerpt="Fallback translation guidance is based on uploaded rows and reviewer corrections.",
-                    )
-                ],
-                warnings=[warning] if warning else [],
-            )
-        return ResearchArtifact(
-            dataset_id=dataset.id,
-            language_code=dataset.language_code,
-            type=research_type,
-            summary=(
-                f"{dataset.language_name} annotation profile for this dataset. "
-                f"Use the uploaded examples as the strongest local evidence: {sample_preview}"
-            ),
-            guidelines=self._guidelines(research_type),
-            sources=[
+    def _fallback_search_sources(self, results: list[dict[str, str]], query: str) -> list[ResearchSource]:
+        sources: list[ResearchSource] = []
+        for result in results[:4]:
+            url = result.get("url")
+            if not url:
+                continue
+            title = result.get("title") or url
+            excerpt = result.get("excerpt") or f"Browserbase search result for: {query}"
+            sources.append(
                 ResearchSource(
-                    title="Universal Dependencies UPOS",
-                    url="https://universaldependencies.org/u/pos/",
-                    excerpt="Universal POS tags provide the default cross-lingual tag schema for this MVP.",
+                    title=title,
+                    url=url,
+                    excerpt=self._compact(excerpt, 900),
                 )
-            ],
-            warnings=[warning] if warning else [],
-        )
+            )
+        return sources
 
-    def _warning(self, provider: str, stage: str, message: str) -> ProviderWarning:
-        return ProviderWarning(provider=provider, stage=stage, message=message, fallback=True)
+    def _string_list(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def _compact(self, text: str, limit: int) -> str:
+        normalized = re.sub(r"\s+", " ", text).strip()
+        return normalized[:limit]
 
 
-class ConfigurableLLMClient:
-    def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
-        self.base_url = self.settings.llm_base_url
-        self.api_key = self.settings.llm_api_key
-        self.model = self.settings.llm_model
-
+class ConfigurableLLMClient(AnthropicClient):
     def summarize_research(
         self, dataset: Dataset, samples: list[str], sources: list[ResearchSource], research_type: str = "pos"
     ) -> tuple[str, ProviderWarning | None]:
-        if not self.base_url or not self.api_key:
-            return self._fallback_summary(dataset, sources, research_type), ProviderWarning(
-                provider="llm",
-                stage="summary",
-                message="LLM_BASE_URL or LLM_API_KEY is not configured.",
-                fallback=True,
-            )
-
-        prompt = {
-            "language": dataset.language_name,
-            "language_code": dataset.language_code,
-            "samples": samples[:10],
-            "sources": [source.model_dump() for source in sources],
-            "task": self._task_prompt(research_type),
-        }
-        try:
-            with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
-                response = client.post(
-                    f"{self.base_url.rstrip('/')}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": "Return concise annotation research notes.",
-                            },
-                            {"role": "user", "content": json.dumps(prompt)},
-                        ],
-                    },
-                )
-                response.raise_for_status()
-                return response.json()["choices"][0]["message"]["content"], None
-        except Exception as exc:
-            return self._fallback_summary(dataset, sources, research_type), ProviderWarning(
-                provider="llm",
-                stage="summary",
-                message=f"LLM summary failed: {exc}",
-                fallback=True,
-            )
-
-    def _task_prompt(self, research_type: str) -> str:
-        if research_type == "translation":
-            return "Summarize translation guidance for low-resource Spanish-to-target-language dataset review."
-        return "Summarize POS annotation guidance for low-resource language dataset review."
-
-    def _fallback_summary(self, dataset: Dataset, sources: list[ResearchSource], research_type: str) -> str:
-        if research_type == "translation":
-            return (
-                f"{dataset.language_name} translation notes synthesized from {len(sources)} source(s). "
-                "Focus on meaning preservation, phrase alignment, orthography, and reviewer-approved corrections."
-            )
-        return (
-            f"{dataset.language_name} research notes synthesized from {len(sources)} source(s). "
-            "Focus on UPOS consistency, morphology cues, particles, auxiliaries, and ambiguous borrowed forms."
+        prompt = BrowserbaseResearchProvider(settings=self.settings, llm=self)._research_prompt(
+            dataset, samples, sources, research_type
         )
+        completion = self.complete_json(
+            task_name=f"{research_type}_research_summary",
+            system="Return concise research JSON.",
+            prompt=prompt,
+        )
+        return str(completion.data.get("summary") or ""), None
 
 
 class PosAnnotationProvider:
-    _punct = re.compile(r"^\W+$", re.UNICODE)
+    provider = "anthropic"
 
-    def suggest(
-        self, text: str, research: ResearchArtifact | None = None
-    ) -> list[TokenSuggestion]:
+    def __init__(self, settings: Settings | None = None, llm: AnthropicClient | None = None, tracer: Tracer | None = None) -> None:
+        self.settings = settings or get_settings()
+        self.tracer = tracer or Tracer(self.settings)
+        self.llm = llm or AnthropicClient(self.settings, self.tracer)
+        self.model_name = self.llm.model
+
+    def suggest(self, text: str, research: ResearchArtifact | None = None) -> list[TokenSuggestion]:
         tokens = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
+        if not tokens:
+            return []
+        prompt = json.dumps(
+            {
+                "text": text,
+                "tokens": [{"index": index, "token": token} for index, token in enumerate(tokens)],
+                "upos_tags": sorted(UPOS_TAGS),
+                "research": research.model_dump(mode="json") if research else None,
+                "required_json_shape": {
+                    "tokens": [
+                        {
+                            "index": 0,
+                            "token": "token text",
+                            "suggested_pos": "NOUN",
+                            "confidence": 0.8,
+                            "rationale": "short reason",
+                        }
+                    ],
+                    "rationale": "sentence-level rationale",
+                    "evaluation": {
+                        "score": 0.0,
+                        "feedback": "judge whether every token has exactly one valid UPOS tag",
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        completion = self.llm.complete_json(
+            task_name="pos_suggestions",
+            system=(
+                "You tag tokens with Universal Dependencies UPOS labels. "
+                "Return exactly one JSON object and preserve token indexes."
+            ),
+            prompt=prompt,
+        )
+        items = completion.data.get("tokens")
+        if not isinstance(items, list):
+            raise RuntimeError("Anthropic POS response did not include a tokens list.")
+        if len(items) != len(tokens):
+            raise RuntimeError("Anthropic POS response token count did not match the input.")
+
         suggestions: list[TokenSuggestion] = []
         for index, token in enumerate(tokens):
-            tag, confidence, rationale = self._tag_token(token, index)
-            if research and research.guidelines:
-                rationale = f"{rationale} Uses cached research profile {research.id}."
+            item = items[index]
+            if not isinstance(item, dict):
+                raise RuntimeError("Anthropic POS response included an invalid token item.")
+            tag = str(item.get("suggested_pos") or "").upper()
+            if tag not in UPOS_TAGS:
+                raise RuntimeError(f"Anthropic POS response included invalid UPOS tag: {tag or 'empty'}.")
             suggestions.append(
                 TokenSuggestion(
                     index=index,
                     token=token,
                     suggested_pos=tag,
-                    confidence=confidence,
-                    rationale=rationale,
+                    confidence=self._confidence(item.get("confidence"), default=0.65),
+                    rationale=str(item.get("rationale") or completion.data.get("rationale") or "Claude UPOS suggestion."),
                 )
             )
         return suggestions
 
-    def _tag_token(self, token: str, index: int) -> tuple[str, float, str]:
-        lower = token.lower()
-        if self._punct.match(token):
-            return "PUNCT", 0.99, "Punctuation is tagged as PUNCT."
-        if lower.isdigit():
-            return "NUM", 0.98, "Numeric tokens are tagged as NUM."
-        if lower in {"el", "la", "los", "las", "un", "una", "the", "a", "an"}:
-            return "DET", 0.86, "Article/determiner form."
-        if lower in {
-            "de",
-            "del",
-            "en",
-            "con",
-            "para",
-            "por",
-            "to",
-            "from",
-            "of",
-            "in",
-            "on",
-        }:
-            return "ADP", 0.84, "Adposition-like function word."
-        if lower in {"y", "o", "and", "or"}:
-            return "CCONJ", 0.9, "Coordinating conjunction."
-        if lower in {"que", "si", "cuando", "because", "that"}:
-            return "SCONJ", 0.78, "Subordinating connector candidate."
-        if lower in {"yo", "tu", "mi", "su", "he", "she", "they", "we", "i"}:
-            return "PRON", 0.82, "Pronoun or possessive pronoun candidate."
-        if lower.endswith(("ar", "er", "ir", "ing", "ed")) or lower in {
-            "es",
-            "son",
-            "esta",
-            "corre",
-            "habla",
-        }:
-            return (
-                "VERB",
-                0.72,
-                "Verb-like form from suffix or common copula/action cue.",
-            )
-        if token[:1].isupper() and index > 0:
-            return "PROPN", 0.7, "Capitalized non-initial token."
-        if lower.endswith(("o", "a", "os", "as", "able", "ible")):
-            return "ADJ", 0.58, "Adjective-like ending; needs human review."
-        return "NOUN", 0.55, "Default content-word guess for low-resource review."
+    def evaluate(
+        self,
+        text: str,
+        tokens: list[TokenSuggestion],
+        research: ResearchArtifact | None = None,
+    ) -> dict[str, Any]:
+        return self.llm.evaluate(
+            task_name="pos_quality",
+            rubric=(
+                "Score whether every token has exactly one valid UPOS tag, the rationale uses language research when "
+                "helpful, and uncertainty is reflected in confidence. Higher is better."
+            ),
+            input_payload={
+                "text": text,
+                "research_summary": research.summary if research else "",
+                "guidelines": research.guidelines if research else [],
+            },
+            output_payload={"tokens": [token.model_dump() for token in tokens]},
+        )
+
+    def _confidence(self, value: object, default: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = default
+        return max(0.0, min(1.0, number))
 
 
 class OCRProvider:
-    def extract(self, asset: UploadedAsset) -> tuple[str, float, str]:
-        decoded = self._try_decode(asset.data)
-        if decoded.strip():
-            return decoded.strip(), 0.88, "Decoded text from uploaded asset bytes."
+    provider = "anthropic"
 
-        label = asset.filename or asset.source_type.value
-        return (
-            f"[OCR draft for {label}]",
-            0.35,
-            "No local OCR engine is configured; placeholder is ready for manual correction or a cloud OCR adapter.",
+    def __init__(self, settings: Settings | None = None, llm: AnthropicClient | None = None, tracer: Tracer | None = None) -> None:
+        self.settings = settings or get_settings()
+        self.tracer = tracer or Tracer(self.settings)
+        self.llm = llm or AnthropicClient(self.settings, self.tracer)
+        self.model_name = self.llm.model
+
+    def extract(self, asset: UploadedAsset) -> tuple[str, float, str]:
+        if asset.source_type.value != "image":
+            raise RuntimeError("OCR currently supports image uploads only.")
+        if not asset.data:
+            raise RuntimeError("Uploaded image bytes were empty.")
+        media_type = self._media_type(asset)
+        prompt = json.dumps(
+            {
+                "filename": asset.filename,
+                "task": "Extract every visible text string from the image. Preserve line breaks when useful.",
+                "required_json_shape": {
+                    "text": "all extracted text",
+                    "confidence": 0.8,
+                    "rationale": "brief quality or uncertainty note",
+                    "evaluation": {
+                        "score": 0.0,
+                        "feedback": "judge whether the extracted text is complete and faithful to the image",
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        completion = self.llm.complete_vision_json(
+            task_name="ocr_extract",
+            system="You are an OCR extraction agent. Return only valid JSON.",
+            prompt=prompt,
+            image_bytes=asset.data,
+            media_type=media_type,
+        )
+        text = str(completion.data.get("text") or "").strip()
+        if not text:
+            raise RuntimeError("Anthropic OCR response did not include extracted text.")
+        return text, self._confidence(completion.data.get("confidence"), default=0.7), str(
+            completion.data.get("rationale") or "Claude vision OCR extraction."
         )
 
-    def _try_decode(self, data: bytes) -> str:
-        for encoding in ("utf-8", "latin-1"):
-            try:
-                text = data.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-            if any(character.isalpha() for character in text):
-                return text
-        return ""
+    def evaluate(self, asset: UploadedAsset, text: str, confidence: float, rationale: str) -> dict[str, Any]:
+        return self.llm.evaluate(
+            task_name="ocr_quality",
+            rubric=(
+                "Score whether the extracted text is complete, faithful to the image, reviewable by a human, "
+                "and has clear uncertainty notes. Higher is better."
+            ),
+            input_payload={"filename": asset.filename, "content_type": asset.content_type},
+            output_payload={"text": text, "confidence": confidence, "rationale": rationale},
+        )
+
+    def _media_type(self, asset: UploadedAsset) -> str:
+        media_type = asset.content_type or mimetypes.guess_type(asset.filename)[0] or "image/png"
+        if media_type not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
+            raise RuntimeError(f"Unsupported image media type for Claude vision: {media_type}.")
+        return media_type
+
+    def _confidence(self, value: object, default: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = default
+        return max(0.0, min(1.0, number))
 
 
 class TranslationProvider:
-    def __init__(self, settings: Settings | None = None) -> None:
+    provider = "anthropic"
+
+    def __init__(self, settings: Settings | None = None, llm: AnthropicClient | None = None, tracer: Tracer | None = None) -> None:
         self.settings = settings or get_settings()
+        self.tracer = tracer or Tracer(self.settings)
+        self.llm = llm or AnthropicClient(self.settings, self.tracer)
         self.endpoint_url = self.settings.nahuatl_model_endpoint_url
         self.model = self.settings.nahuatl_model_name
+        self.model_name = self.llm.model
 
-    def translate(
-        self, text: str, direction: str = "spanish_to_nahuatl"
+    def suggest(
+        self,
+        *,
+        text: str,
+        direction: str,
+        research: ResearchArtifact | None,
+        row_metadata: dict[str, Any] | None = None,
     ) -> TranslationProviderResult:
+        prompt = json.dumps(
+            {
+                "source_text": text,
+                "direction": direction,
+                "row_metadata": row_metadata or {},
+                "research": research.model_dump(mode="json") if research else None,
+                "required_json_shape": {
+                    "translation": "translated text",
+                    "confidence": 0.75,
+                    "rationale": "short reason and uncertainty note",
+                    "evaluation": {
+                        "score": 0.0,
+                        "feedback": "judge whether the translation preserves meaning and uses the research notes",
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        completion = self.llm.complete_json(
+            task_name="translation_suggestion",
+            system="You are a careful low-resource language translation assistant. Return only valid JSON.",
+            prompt=prompt,
+        )
+        output = str(
+            completion.data.get("translation") or completion.data.get("text") or completion.data.get("output_text") or ""
+        ).strip()
+        if not output:
+            raise RuntimeError("Anthropic translation response did not include translated text.")
+        return TranslationProviderResult(
+            output_text=output,
+            provider=self.provider,
+            model=self.llm.model,
+            confidence=self._confidence(completion.data.get("confidence"), default=0.65),
+            rationale=str(completion.data.get("rationale") or "Claude translation suggestion."),
+            metadata={
+                "usage": completion.usage,
+            },
+        )
+
+    def evaluate(
+        self,
+        *,
+        text: str,
+        direction: str,
+        result: TranslationProviderResult,
+        research: ResearchArtifact | None,
+        row_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.llm.evaluate(
+            task_name="translation_quality",
+            rubric=(
+                "Score whether the translation preserves source meaning, uses the target-language research notes, "
+                "keeps uncertainty visible, and is useful as a human-review suggestion. Higher is better."
+            ),
+            input_payload={
+                "source_text": text,
+                "direction": direction,
+                "row_metadata": row_metadata or {},
+                "research_summary": research.summary if research else "",
+                "guidelines": research.guidelines if research else [],
+            },
+            output_payload={
+                "translation": result.output_text,
+                "confidence": result.confidence,
+                "rationale": result.rationale,
+            },
+        )
+
+    def translate(self, text: str, direction: str = "spanish_to_nahuatl") -> TranslationProviderResult:
+        if self.settings.anthropic_api_key:
+            return self.suggest(text=text, direction=direction, research=None, row_metadata={})
+
         warning: ProviderWarning | None = None
         if self.endpoint_url:
             try:
                 with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
-                    response = client.post(
-                        self.endpoint_url, json={"text": text, "direction": direction}
-                    )
+                    response = client.post(self.endpoint_url, json={"text": text, "direction": direction})
                     response.raise_for_status()
                     payload = response.json()
                     return TranslationProviderResult(
                         output_text=str(payload.get("translation") or payload.get("output_text")),
                         provider="aws-neuron-endpoint",
                         model=self.model,
+                        confidence=0.75,
+                        rationale="External translation endpoint response.",
                     )
             except Exception as exc:
                 warning = ProviderWarning(
@@ -397,6 +883,15 @@ class TranslationProvider:
             output_text=demo_phrases.get(text.lower(), f"[Nahuatl demo translation] {text}"),
             provider="local-demo",
             model=self.model,
+            confidence=0.35,
+            rationale="Local demo endpoint fallback.",
             used_fallback=True,
             warning=warning,
         )
+
+    def _confidence(self, value: object, default: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = default
+        return max(0.0, min(1.0, number))
