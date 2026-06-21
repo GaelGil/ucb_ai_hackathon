@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from app.routes.mappers import (
+from app.utils.mappers import (
     ai_suggestion_to_api,
     suggestion_status_to_db,
     suggestion_type_to_db,
@@ -15,7 +15,7 @@ from app.database.models.label import LabelSource, LabelType
 from app.database.models.language import now_utc
 from app.database.models.research import ResearchType
 from app.database.models.suggestion import SuggestionStatus as DbSuggestionStatus
-from app.jobs import JobRunner
+from app.utils.jobs import JobRunner
 from app.schemas import (
     Label as ApiLabel,
     LabelSource as ApiLabelSource,
@@ -215,7 +215,7 @@ class LabelsService:
             db_label_type = None
         if source is not None:
             filters.append(Label.source == LabelSource(source.value))
-        from app.routes.mappers import label_to_api
+        from app.utils.mappers import label_to_api
 
         if db_label_type == LabelType.translation:
             records = self.session.exec(

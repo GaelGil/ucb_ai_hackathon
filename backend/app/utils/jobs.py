@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from sqlmodel import Session
 
-from app.routes.mappers import job_to_api
+from app.utils.mappers import job_to_api
 from app.database.models.job import Job as DbJob
 from app.database.models.job import JobStatus as DbJobStatus
 from app.database.models.language import now_utc

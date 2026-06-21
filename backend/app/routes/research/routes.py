@@ -9,7 +9,7 @@ from app.routes.context import AppServices, get_research_service, get_services
 from app.routes.responses import json_abort, json_response
 from app.routes.research.service import ResearchService
 from app.database.models.research import ResearchType
-from app.jobs import JobRunner
+from app.utils.jobs import JobRunner
 from app.schemas import ResearchArtifact, ResearchResponse
 
 
