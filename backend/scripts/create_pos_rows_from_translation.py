@@ -9,11 +9,11 @@ from sqlmodel import Session, select
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import app.src.database.models  # noqa: F401  (registers SQLModel tables)
-from app.src.database.models import DataRow, Dataset, ImportRecord, Label, Language
-from app.src.database.models.data import DataSourceType
-from app.src.database.models.label import LabelType
-from app.src.database.session import engine
+import app.database.models  # noqa: F401  (registers SQLModel tables)
+from app.database.models import DataRow, Dataset, ImportRecord, Label, Language
+from app.database.models.data import DataSourceType
+from app.database.models.label import LabelType
+from app.database.session import engine
 
 
 SCRIPT_NAME = "create_pos_rows_from_translation.py"

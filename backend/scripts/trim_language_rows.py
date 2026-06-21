@@ -10,10 +10,10 @@
 
 # sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# import app.src.database.models  # noqa: F401  (registers SQLModel tables)
-# from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
-# from app.src.database.models.language import now_utc
-# from app.src.database.session import engine
+# import app.database.models  # noqa: F401  (registers SQLModel tables)
+# from app.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
+# from app.database.models.language import now_utc
+# from app.database.session import engine
 
 
 # DELETE_CHUNK_SIZE = 1000

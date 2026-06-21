@@ -3,10 +3,10 @@ import json as json_module
 import pytest
 import httpx
 
-from app.src.config import Settings
-from app.src.models import Dataset
-from app.src.providers import BrowserbaseResearchProvider, JsonCompletion
-from app.src.tracing import Tracer
+from app.config import Settings
+from app.models import Dataset
+from app.providers import BrowserbaseResearchProvider, JsonCompletion
+from app.tracing import Tracer
 
 
 class FakeLLM:
@@ -96,7 +96,7 @@ def test_browserbase_fetch_402_falls_back_to_search_results(monkeypatch) -> None
         },
         fetch_status=402,
     )
-    monkeypatch.setattr("app.src.providers.httpx.Client", fake_client)
+    monkeypatch.setattr("app.providers.httpx.Client", fake_client)
     fake_llm = FakeLLM()
     provider = provider_with(fake_llm)
 
@@ -120,7 +120,7 @@ def test_browserbase_fetch_402_falls_back_to_search_results(monkeypatch) -> None
 
 def test_browserbase_empty_search_still_fails_without_calling_llm(monkeypatch) -> None:
     fake_client, _ = make_fake_http_client(search_payload={"results": []})
-    monkeypatch.setattr("app.src.providers.httpx.Client", fake_client)
+    monkeypatch.setattr("app.providers.httpx.Client", fake_client)
     fake_llm = FakeLLM()
     provider = provider_with(fake_llm)
 

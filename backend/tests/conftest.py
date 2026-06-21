@@ -13,8 +13,8 @@ from sqlmodel import Session, SQLModel, create_engine
 
 # Importing the models package registers every table on SQLModel.metadata,
 # which create_all() needs.
-import app.src.database.models  # noqa: F401
-from app.src.config import Settings
+import app.database.models  # noqa: F401
+from app.config import Settings
 
 settings = Settings(_env_file=None)
 
