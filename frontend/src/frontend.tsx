@@ -1,8 +1,19 @@
 import "@mantine/core/styles.css";
 import { MantineProvider, createTheme } from "@mantine/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  },
+});
 
 const theme = createTheme({
   defaultRadius: "md",
@@ -14,9 +25,11 @@ const theme = createTheme({
 const elem = document.getElementById("root")!;
 const app = (
   <StrictMode>
-    <MantineProvider defaultColorScheme="dark" theme={theme}>
-      <App />
-    </MantineProvider>
+    <QueryClientProvider client={queryClient}>
+      <MantineProvider defaultColorScheme="dark" theme={theme}>
+        <App />
+      </MantineProvider>
+    </QueryClientProvider>
   </StrictMode>
 );
 

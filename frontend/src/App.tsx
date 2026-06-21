@@ -30,6 +30,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -43,7 +44,11 @@ import {
   TbWand,
 } from "react-icons/tb";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const configuredApiBaseUrl =
+  typeof process !== "undefined" ? process.env.BUN_PUBLIC_API_BASE_URL?.replace(/\/$/, "") : "";
+const isLocalBrowser =
+  typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const API_BASE_URL = configuredApiBaseUrl || (isLocalBrowser ? "http://127.0.0.1:8000" : "");
 
 const UPOS_TAGS = [
   "ADJ",
@@ -84,6 +89,13 @@ type SuggestionType = "pos" | "ocr" | "translation" | "emotion" | "intention" | 
 type SuggestionStatus = "pending" | "accepted" | "denied" | "updated" | "approved" | "edited";
 type LabelSource = "csv_import" | "human" | "ai_accepted" | "ai_updated";
 
+type ProviderWarning = {
+  provider: string;
+  stage: string;
+  message: string;
+  fallback: boolean;
+};
+
 type Dataset = {
   id: string;
   name: string;
@@ -110,6 +122,7 @@ type ResearchArtifact = {
   summary: string;
   guidelines: string[];
   sources: { title: string; url: string; excerpt: string }[];
+  warnings: ProviderWarning[];
 };
 
 type TokenSuggestion = {
@@ -148,6 +161,8 @@ type Label = {
 
 type PosModel = {
   status: string;
+  mode: "demo" | "real";
+  minimum_examples_met: boolean;
   accepted_sentence_count: number;
   minimum_examples: number;
   model_name: string | null;
@@ -182,10 +197,18 @@ type DraftMap = Record<string, TokenSuggestion[]>;
 type TextDraftMap = Record<string, string>;
 type WorkspaceTab = "pos" | "ocr" | "translate" | "upload" | "models";
 
+const EMPTY_DATASETS: Dataset[] = [];
+const EMPTY_SUGGESTIONS: Suggestion[] = [];
+const EMPTY_LABELS: Label[] = [];
+
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = new Headers(options?.headers);
+  if (options?.body !== undefined && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: options?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
     ...options,
+    headers: headers.entries().next().done ? undefined : headers,
   });
   if (!response.ok) {
     const message = await response.text();
@@ -197,8 +220,8 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function optionalApi<T>(path: string): Promise<T | null> {
-  const response = await fetch(`${API_BASE_URL}${path}`);
+async function optionalApi<T>(path: string, options?: RequestInit): Promise<T | null> {
+  const response = await fetch(`${API_BASE_URL}${path}`, options);
   if (response.status === 404) {
     return null;
   }
@@ -207,6 +230,98 @@ async function optionalApi<T>(path: string): Promise<T | null> {
     throw new Error(message || `Request failed with ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+const queryKeys = {
+  datasets: ["datasets"] as const,
+  workspace: (datasetId: string) => ["workspace", datasetId] as const,
+  dashboard: (datasetId: string) => [...queryKeys.workspace(datasetId), "dashboard"] as const,
+  suggestions: (datasetId: string, type: SuggestionType, status: SuggestionStatus, limit: number) =>
+    [...queryKeys.workspace(datasetId), "suggestions", type, status, limit] as const,
+  labels: (datasetId: string, type: SuggestionType, limit: number) =>
+    [...queryKeys.workspace(datasetId), "labels", type, limit] as const,
+  research: (datasetId: string, type: ResearchType) => [...queryKeys.workspace(datasetId), "research", type] as const,
+};
+
+function useDatasets() {
+  return useQuery({
+    queryKey: queryKeys.datasets,
+    queryFn: ({ signal }) => api<Dataset[]>("/datasets", { signal }),
+  });
+}
+
+function useWorkspaceData(datasetId: string) {
+  const enabled = datasetId.length > 0;
+  const dashboardQuery = useQuery({
+    queryKey: queryKeys.dashboard(datasetId),
+    queryFn: ({ signal }) => api<Dashboard>(`/datasets/${datasetId}/dashboard`, { signal }),
+    enabled,
+  });
+  const posSuggestionsQuery = useQuery({
+    queryKey: queryKeys.suggestions(datasetId, "pos", "pending", 5),
+    queryFn: ({ signal }) =>
+      api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`, {
+        signal,
+      }),
+    enabled,
+  });
+  const ocrSuggestionsQuery = useQuery({
+    queryKey: queryKeys.suggestions(datasetId, "ocr", "pending", 5),
+    queryFn: ({ signal }) =>
+      api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`, {
+        signal,
+      }),
+    enabled,
+  });
+  const translationSuggestionsQuery = useQuery({
+    queryKey: queryKeys.suggestions(datasetId, "translation", "pending", 5),
+    queryFn: ({ signal }) =>
+      api<{ suggestions: Suggestion[] }>(
+        `/datasets/${datasetId}/suggestions?type=translation&status=pending&limit=5`,
+        { signal },
+      ),
+    enabled,
+  });
+  const translationLabelsQuery = useQuery({
+    queryKey: queryKeys.labels(datasetId, "translation", 500),
+    queryFn: ({ signal }) => api<{ labels: Label[] }>(`/datasets/${datasetId}/labels?type=translation&limit=500`, { signal }),
+    enabled,
+  });
+  const posResearchQuery = useQuery({
+    queryKey: queryKeys.research(datasetId, "pos"),
+    queryFn: ({ signal }) => optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=pos`, { signal }),
+    enabled,
+  });
+  const translationResearchQuery = useQuery({
+    queryKey: queryKeys.research(datasetId, "translation"),
+    queryFn: ({ signal }) =>
+      optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=translation`, { signal }),
+    enabled,
+  });
+  const queries = [
+    dashboardQuery,
+    posSuggestionsQuery,
+    ocrSuggestionsQuery,
+    translationSuggestionsQuery,
+    translationLabelsQuery,
+    posResearchQuery,
+    translationResearchQuery,
+  ];
+
+  return {
+    dashboard: dashboardQuery.data ?? null,
+    posSuggestions: posSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    ocrSuggestions: ocrSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    translationSuggestions: translationSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    translationLabels: translationLabelsQuery.data?.labels ?? EMPTY_LABELS,
+    researchByType: {
+      pos: posResearchQuery.data ?? null,
+      translation: translationResearchQuery.data ?? null,
+    } satisfies Record<ResearchType, ResearchArtifact | null>,
+    isLoading: queries.some(query => query.isLoading),
+    isFetching: queries.some(query => query.isFetching),
+    error: queries.find(query => query.error)?.error ?? null,
+  };
 }
 
 function sourceColor(source: SourceType) {
@@ -280,20 +395,18 @@ function assertJobSucceeded(job: Job) {
 }
 
 export function App() {
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const queryClient = useQueryClient();
+  const datasetsQuery = useDatasets();
+  const datasets = datasetsQuery.data ?? EMPTY_DATASETS;
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [ocrSuggestions, setOcrSuggestions] = useState<Suggestion[]>([]);
-  const [translationSuggestions, setTranslationSuggestions] = useState<Suggestion[]>([]);
-  const [translationLabels, setTranslationLabels] = useState<Label[]>([]);
-  const [researchByType, setResearchByType] = useState<Record<ResearchType, ResearchArtifact | null>>({
-    pos: null,
-    translation: null,
-  });
+  const workspaceData = useWorkspaceData(selectedDatasetId);
+  const dashboard = workspaceData.dashboard;
+  const suggestions = workspaceData.posSuggestions;
+  const ocrSuggestions = workspaceData.ocrSuggestions;
+  const translationSuggestions = workspaceData.translationSuggestions;
+  const translationLabels = workspaceData.translationLabels;
+  const researchByType = workspaceData.researchByType;
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [datasetsLoading, setDatasetsLoading] = useState(true);
-  const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [working, setWorking] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("pos");
@@ -332,95 +445,83 @@ export function App() {
     (dashboard?.suggestion_counts["pos:edited"] ?? 0);
   const pendingOcrCount = dashboard?.suggestion_counts["ocr:pending"] ?? 0;
   const uploadFileIsCsv = uploadFile?.name.toLowerCase().endsWith(".csv") ?? false;
+  const datasetsLoading = datasetsQuery.isLoading;
+  const workspaceLoading = workspaceData.isLoading;
 
   useEffect(() => {
-    void loadDatasets();
-  }, []);
+    if (!datasetsQuery.isSuccess) return;
+    setSelectedDatasetId(current =>
+      datasets.some(dataset => dataset.id === current) ? current : datasets[0]?.id || "",
+    );
+  }, [datasets, datasetsQuery.isSuccess]);
 
   useEffect(() => {
-    if (selectedDatasetId) {
-      void refreshWorkspace(selectedDatasetId);
-    } else {
+    if (!selectedDatasetId) {
       clearWorkspaceState();
     }
   }, [selectedDatasetId]);
 
-  async function loadDatasets() {
-    setDatasetsLoading(true);
-    try {
-      const rows = await api<Dataset[]>("/datasets");
-      setDatasets(rows);
-      setSelectedDatasetId(current =>
-        rows.some(dataset => dataset.id === current) ? current : rows[0]?.id || "",
-      );
-    } catch (error) {
-      showError(error);
-    } finally {
-      setDatasetsLoading(false);
+  useEffect(() => {
+    if (datasetsQuery.error) {
+      showError(datasetsQuery.error);
     }
+  }, [datasetsQuery.error]);
+
+  useEffect(() => {
+    if (workspaceData.error) {
+      showError(workspaceData.error);
+    }
+  }, [workspaceData.error]);
+
+  useEffect(() => {
+    setTokenDrafts(previous => {
+      const next = { ...previous };
+      for (const suggestion of suggestions) {
+        next[suggestion.id] ??= suggestion.tokens;
+      }
+      return next;
+    });
+  }, [suggestions]);
+
+  useEffect(() => {
+    setOcrDrafts(previous => {
+      const next = { ...previous };
+      for (const suggestion of ocrSuggestions) {
+        next[suggestion.id] ??= suggestion.suggested_text ?? "";
+      }
+      return next;
+    });
+  }, [ocrSuggestions]);
+
+  useEffect(() => {
+    setTranslationDrafts(previous => {
+      const next = { ...previous };
+      for (const suggestion of translationSuggestions) {
+        next[suggestion.id] ??= suggestion.suggested_text ?? "";
+      }
+      return next;
+    });
+  }, [translationSuggestions]);
+
+  async function invalidateDatasets() {
+    await queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
   }
 
-  async function refreshWorkspace(datasetId = selectedDatasetId) {
+  async function invalidateWorkspace(datasetId = selectedDatasetId) {
     if (!datasetId) return;
-    setWorkspaceLoading(true);
-    try {
-      const [
-        nextDashboard,
-        nextSuggestions,
-        nextOcrSuggestions,
-        nextTranslationSuggestions,
-        nextTranslationLabels,
-        nextPosResearch,
-        nextTranslationResearch,
-      ] = await Promise.all([
-        api<Dashboard>(`/datasets/${datasetId}/dashboard`),
-        api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`),
-        api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`),
-        api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=translation&status=pending&limit=5`),
-        api<{ labels: Label[] }>(`/datasets/${datasetId}/labels?type=translation&limit=500`),
-        optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=pos`),
-        optionalApi<ResearchArtifact>(`/datasets/${datasetId}/research?type=translation`),
-      ]);
-      setDashboard(nextDashboard);
-      setSuggestions(nextSuggestions.suggestions);
-      setOcrSuggestions(nextOcrSuggestions.suggestions);
-      setTranslationSuggestions(nextTranslationSuggestions.suggestions);
-      setTranslationLabels(nextTranslationLabels.labels);
-      setResearchByType({ pos: nextPosResearch, translation: nextTranslationResearch });
-      setTokenDrafts(previous => {
-        const next = { ...previous };
-        for (const suggestion of nextSuggestions.suggestions) {
-          next[suggestion.id] ??= suggestion.tokens;
-        }
-        return next;
-      });
-      setOcrDrafts(previous => {
-        const next = { ...previous };
-        for (const suggestion of nextOcrSuggestions.suggestions) {
-          next[suggestion.id] ??= suggestion.suggested_text ?? "";
-        }
-        return next;
-      });
-      setTranslationDrafts(previous => {
-        const next = { ...previous };
-        for (const suggestion of nextTranslationSuggestions.suggestions) {
-          next[suggestion.id] ??= suggestion.suggested_text ?? "";
-        }
-        return next;
-      });
-    } catch (error) {
-      showError(error);
-    } finally {
-      setWorkspaceLoading(false);
-    }
+    await queryClient.invalidateQueries({ queryKey: queryKeys.workspace(datasetId) });
   }
 
-  async function runAction<T>(callback: () => Promise<T>, successMessage: string | ((result: T) => string)) {
+  async function runAction<T>(
+    callback: () => Promise<T>,
+    successMessage: string | ((result: T) => string),
+    afterSuccess: (result: T) => Promise<void> | void = () => invalidateWorkspace(),
+  ) {
     setWorking(true);
     try {
       const result = await callback();
       setToast({ tone: "green", message: typeof successMessage === "function" ? successMessage(result) : successMessage });
-      await refreshWorkspace();
+      await afterSuccess(result);
       return result;
     } catch (error) {
       showError(error);
@@ -432,7 +533,7 @@ export function App() {
 
   async function createDataset() {
     if (!datasetName.trim() || !languageCode.trim() || !languageName.trim()) return;
-    const created = await runAction(
+    await runAction(
       () =>
         api<Dataset>("/datasets", {
           method: "POST",
@@ -443,28 +544,33 @@ export function App() {
           }),
         }),
       "Dataset created",
+      async created => {
+        queryClient.setQueryData<Dataset[]>(queryKeys.datasets, current => [
+          ...(current ?? []).filter(dataset => dataset.id !== created.id),
+          created,
+        ]);
+        setSelectedDatasetId(created.id);
+        setAddLanguageFormOpen(false);
+        await invalidateDatasets();
+      },
     );
-    if (created) {
-      const rows = await api<Dataset[]>("/datasets");
-      setDatasets(rows);
-      setSelectedDatasetId(created.id);
-      setAddLanguageFormOpen(false);
-    }
   }
 
   async function deleteDataset(dataset: Dataset) {
     setWorking(true);
     try {
       await api<void>(`/datasets/${dataset.id}`, { method: "DELETE" });
-      const rows = await api<Dataset[]>("/datasets");
-      const currentStillExists = rows.some(item => item.id === selectedDatasetId);
-      const nextSelectedId = currentStillExists ? selectedDatasetId : rows[0]?.id || "";
+      const remaining = datasets.filter(item => item.id !== dataset.id);
+      const currentStillExists = remaining.some(item => item.id === selectedDatasetId);
+      const nextSelectedId = currentStillExists ? selectedDatasetId : remaining[0]?.id || "";
 
-      setDatasets(rows);
+      queryClient.setQueryData<Dataset[]>(queryKeys.datasets, remaining);
+      queryClient.removeQueries({ queryKey: queryKeys.workspace(dataset.id) });
       setSelectedDatasetId(nextSelectedId);
       setDeleteTarget(null);
       setToast({ tone: "green", message: "Language deleted" });
       setJobs([]);
+      await invalidateDatasets();
 
       if (!nextSelectedId) {
         clearWorkspaceState();
@@ -590,17 +696,10 @@ export function App() {
   }
 
   function clearWorkspaceState() {
-    setDashboard(null);
-    setSuggestions([]);
-    setOcrSuggestions([]);
-    setTranslationSuggestions([]);
-    setTranslationLabels([]);
-    setResearchByType({ pos: null, translation: null });
     setTokenDrafts({});
     setOcrDrafts({});
     setTranslationDrafts({});
     setJobs([]);
-    setWorkspaceLoading(false);
   }
 
   function updateTokenDraft(suggestionId: string, tokenIndex: number, tag: string | null) {
@@ -939,6 +1038,7 @@ export function App() {
               onRefreshResearch={() => void runResearch(true)}
               onTypeChange={setActiveResearchType}
             />
+            <JobsPanel jobs={jobs} />
             <Tabs value={activeTab} onChange={handleTabChange} radius="md" variant="pills">
               <Tabs.List>
                 <Tabs.Tab leftSection={<TbTags aria-hidden="true" size={16} />} value="pos">
@@ -1245,6 +1345,15 @@ function ResearchPanel({
                 </Badge>
               ))}
             </Group>
+            {research.warnings.length > 0 ? (
+              <Stack gap={4}>
+                {research.warnings.map((warning, index) => (
+                  <Text key={`${warning.provider}-${warning.stage}-${index}`} c="yellow" size="xs">
+                    Demo fallback: {warning.provider} {warning.stage} - {warning.message}
+                  </Text>
+                ))}
+              </Stack>
+            ) : null}
           </>
         ) : (
           <Text c="dimmed" size="sm">
@@ -1886,6 +1995,16 @@ function ModelsPanel({
   working: boolean;
   onTrainPos: () => void;
 }) {
+  const minimumExamples = posModel?.minimum_examples ?? 20;
+  const minimumMet = posModel?.minimum_examples_met ?? acceptedPosCount >= minimumExamples;
+  const trainingMode = posModel?.mode ?? "demo";
+  const posStatus = posModel
+    ? `${trainingMode === "demo" ? "demo " : ""}${posModel.status.replaceAll("_", " ")}`
+    : "not started";
+  const posDescription = minimumMet
+    ? `${acceptedPosCount} reviewed examples are ready for the tagger.`
+    : `${acceptedPosCount}/${minimumExamples} reviewed examples; demo mode can still run for the presentation.`;
+
   return (
     <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
       <ModelTrainingCard
@@ -1905,11 +2024,11 @@ function ModelsPanel({
         tone="violet"
       />
       <ModelTrainingCard
-        actionLabel="Train POS Tagger"
-        description={`${acceptedPosCount} accepted examples are ready to train the tagger.`}
+        actionLabel="Run Demo POS Training"
+        description={posDescription}
         disabled={working}
         onAction={onTrainPos}
-        status={posModel?.status.replaceAll("_", " ") ?? "not started"}
+        status={posStatus}
         title="POS Tagging"
         tone="green"
       />
@@ -1964,28 +2083,58 @@ function ModelTrainingCard({
   );
 }
 
+function jobWarnings(job: Job): ProviderWarning[] {
+  const warnings = job.metadata["warnings"];
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter(
+    (warning): warning is ProviderWarning =>
+      typeof warning === "object" &&
+      warning !== null &&
+      "provider" in warning &&
+      "stage" in warning &&
+      "message" in warning,
+  );
+}
+
 function JobsPanel({ jobs }: { jobs: Job[] }) {
   if (jobs.length === 0) return null;
   return (
     <PaperPanel title="Recent jobs" eyebrow="Polling-compatible status">
       <SimpleGrid cols={{ base: 1, md: 3 }} spacing="sm">
-        {jobs.map(job => (
-          <Card key={job.id} withBorder radius="md" p="sm" style={{ background: UI.panelSoft, borderColor: UI.border }}>
-            <Group justify="space-between" wrap="nowrap">
-              <Box>
-                <Text fw={700} size="sm">
-                  {job.type}
-                </Text>
-                <Text c="dimmed" size="xs">
-                  {job.message || job.id}
-                </Text>
-              </Box>
-              <Badge color={statusColor(job.status)} radius="sm" variant="dot">
-                {job.status}
-              </Badge>
-            </Group>
-          </Card>
-        ))}
+        {jobs.map(job => {
+          const warnings = jobWarnings(job);
+          const usedFallback = job.metadata["used_fallback"] === true || warnings.length > 0;
+
+          return (
+            <Card key={job.id} withBorder radius="md" p="sm" style={{ background: UI.panelSoft, borderColor: UI.border }}>
+              <Stack gap={6}>
+                <Group justify="space-between" wrap="nowrap">
+                  <Box>
+                    <Text fw={700} size="sm">
+                      {job.type}
+                    </Text>
+                    <Text c="dimmed" size="xs">
+                      {job.message || job.id}
+                    </Text>
+                  </Box>
+                  <Badge color={statusColor(job.status)} radius="sm" variant="dot">
+                    {job.status}
+                  </Badge>
+                </Group>
+                {usedFallback ? (
+                  <Badge color="yellow" radius="sm" variant="light" w="fit-content">
+                    Demo fallback
+                  </Badge>
+                ) : null}
+                {warnings.slice(0, 1).map(warning => (
+                  <Text key={`${job.id}-${warning.provider}-${warning.stage}`} c="dimmed" size="xs">
+                    {warning.provider}: {warning.message}
+                  </Text>
+                ))}
+              </Stack>
+            </Card>
+          );
+        })}
       </SimpleGrid>
     </PaperPanel>
   );
