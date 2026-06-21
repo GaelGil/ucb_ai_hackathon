@@ -14,9 +14,9 @@ from sqlmodel import Session, SQLModel, create_engine
 # Importing the models package registers every table on SQLModel.metadata,
 # which create_all() needs.
 import app.src.database.models  # noqa: F401
-from app.src.config import get_settings
+from app.src.config import Settings
 
-settings = get_settings()
+settings = Settings(_env_file=None)
 
 collect_ignore = [
     "test_browserbase_tool.py",

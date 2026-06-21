@@ -89,7 +89,14 @@ def client() -> TestClient:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    settings = Settings(database_url="sqlite://", seed_demo_data=True, agent_jobs_background=False)
+    settings = Settings(
+        _env_file=None,
+        database_url="sqlite://",
+        seed_demo_data=True,
+        agent_jobs_background=False,
+        arize_enabled=False,
+        phoenix_enabled=False,
+    )
     app = create_app(settings=settings, engine=engine, create_tables=True)
     app.state.services = replace(
         app.state.services,
