@@ -130,6 +130,7 @@ def research_to_api(dataset: Dataset, language: Language, research: Research) ->
         id=research.id,
         dataset_id=dataset.id,
         language_code=language.code,
+        type=research.type.value if hasattr(research.type, "value") else str(research.type),
         summary=research.notes or "",
         guidelines=[str(item) for item in research.research_metadata.get("guidelines", [])],
         sources=[_research_source(source) for source in research.sources],

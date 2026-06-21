@@ -24,6 +24,12 @@ class SourceType(StrEnum):
     IMAGE = "image"
 
 
+class ImportKind(StrEnum):
+    GENERIC = "generic"
+    TRANSLATION = "translation"
+    POS = "pos"
+
+
 class SuggestionType(StrEnum):
     POS = "pos"
     OCR = "ocr"
@@ -158,6 +164,7 @@ class ResearchArtifact(BaseModel):
     id: str = Field(default_factory=lambda: new_id("research"))
     dataset_id: str
     language_code: str
+    type: str = "pos"
     summary: str
     guidelines: list[str] = Field(default_factory=list)
     sources: list[ResearchSource] = Field(default_factory=list)
@@ -210,6 +217,10 @@ class Job(BaseModel):
 
 class PosSuggestionRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=5)
+
+
+class TranslationSuggestionRequest(BaseModel):
+    limit: int = Field(default=5, ge=1, le=20)
 
 
 class OcrRequest(BaseModel):

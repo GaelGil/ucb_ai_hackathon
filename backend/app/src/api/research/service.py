@@ -54,17 +54,21 @@ class ResearchService:
                 if row.text_content
             ]
             with self.tracer.span("research.create", dataset_id=dataset.id, language=dataset.language.code):
-                artifact = self.research_provider.create_research(dataset_to_api(dataset), samples)
+                artifact = self.research_provider.create_research(dataset_to_api(dataset), samples, research_type.value)
 
             row = existing or Research(language_id=dataset.language_id, type=research_type)
             row.notes = artifact.summary
             row.sources = [source.model_dump() for source in artifact.sources]
-            row.research_metadata = {"guidelines": artifact.guidelines, "dataset_id": dataset.id}
+            row.research_metadata = {
+                "guidelines": artifact.guidelines,
+                "dataset_id": dataset.id,
+                "research_type": research_type.value,
+            }
             self.session.add(row)
             self.session.commit()
             self.session.refresh(row)
             research_holder["row"] = row
-            return {"dataset_id": dataset.id, "research_id": row.id, "cached": False}
+            return {"dataset_id": dataset.id, "research_id": row.id, "research_type": research_type.value, "cached": False}
 
         job = self.jobs.run("research", callback)
         row = research_holder.get("row")

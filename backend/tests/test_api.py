@@ -96,6 +96,85 @@ def test_csv_import_can_create_labels(client: TestClient) -> None:
     assert [label["data_text"] for label in translations] == ["hello world", "second row"]
 
 
+def test_translation_csv_import_uses_required_columns(client: TestClient) -> None:
+    dataset = client.get("/datasets").json()[0]
+
+    response = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={
+            "source_type": "csv",
+            "import_kind": "translation",
+            "text": (
+                "text,translation,source,src,target\n"
+                "hello world,tlasohkamati,axolotl,sp,nah\n"
+                "missing translation,,axolotl,sp,nah\n"
+            ),
+        },
+    ).json()
+
+    assert response["job"]["status"] == "succeeded"
+    assert response["job"]["metadata"]["import_kind"] == "translation"
+    assert response["job"]["metadata"]["skipped_count"] == 1
+    assert response["import_record"]["item_count"] == 1
+    assert response["import_record"]["label_count"] == 1
+    assert response["created_items"][0]["text"] == "hello world"
+    assert response["created_labels"][0]["type"] == "translation"
+    assert response["created_labels"][0]["name"] == "translation"
+    assert response["created_labels"][0]["value"] == {
+        "text": "tlasohkamati",
+        "source": "axolotl",
+        "src": "sp",
+        "target": "nah",
+    }
+
+
+def test_pos_csv_import_accepts_text_tags_and_json_list_tags(client: TestClient) -> None:
+    dataset = client.get("/datasets").json()[0]
+
+    response = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={
+            "source_type": "csv",
+            "import_kind": "pos",
+            "text": (
+                "text,tags\n"
+                "\"mi casa\",\"PRON NOUN\"\n"
+                "\"el agua\",\"[\"\"DET\"\", \"\"NOUN\"\"]\"\n"
+                "\"bad count\",\"NOUN\"\n"
+                "\"bad tag\",\"NOUN NOPE\"\n"
+            ),
+        },
+    ).json()
+
+    assert response["job"]["status"] == "succeeded"
+    assert response["job"]["metadata"]["import_kind"] == "pos"
+    assert response["job"]["metadata"]["skipped_count"] == 2
+    assert response["import_record"]["item_count"] == 2
+    assert response["import_record"]["label_count"] == 2
+    assert [item["text"] for item in response["created_items"]] == ["mi casa", "el agua"]
+    assert [label["type"] for label in response["created_labels"]] == ["pos", "pos"]
+    assert [label["value"]["tags"] for label in response["created_labels"]] == ["PRON NOUN", "DET NOUN"]
+
+
+def test_specialized_csv_import_fails_when_required_headers_are_missing(client: TestClient) -> None:
+    dataset = client.get("/datasets").json()[0]
+
+    response = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={
+            "source_type": "csv",
+            "import_kind": "pos",
+            "text": "text,label\nhello,NOUN\n",
+        },
+    ).json()
+
+    assert response["job"]["status"] == "failed"
+    assert "POS CSV requires columns: text,tags" in response["job"]["error"]
+    assert response["import_record"]["status"] == "failed"
+    assert response["import_record"]["item_count"] == 0
+    assert response["import_record"]["label_count"] == 0
+
+
 def test_delete_dataset_removes_workspace_state(client: TestClient) -> None:
     dataset = client.post(
         "/datasets",

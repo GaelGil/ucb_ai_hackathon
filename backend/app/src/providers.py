@@ -28,14 +28,11 @@ class BrowserbaseResearchProvider:
         self.llm = llm or ConfigurableLLMClient(self.settings)
         self.base_url = self.settings.browserbase_base_url
 
-    def create_research(self, dataset: Dataset, samples: list[str]) -> ResearchArtifact:
+    def create_research(self, dataset: Dataset, samples: list[str], research_type: str = "pos") -> ResearchArtifact:
         if not self.api_key:
-            return self._fallback_research(dataset, samples)
+            return self._fallback_research(dataset, samples, research_type)
 
-        query = (
-            f"{dataset.language_name} language part of speech grammar annotation "
-            "Universal Dependencies POS morphology"
-        )
+        query = self._research_query(dataset, research_type)
         headers = {"x-bb-api-key": self.api_key, "Content-Type": "application/json"}
         sources: list[ResearchSource] = []
         try:
@@ -65,24 +62,46 @@ class BrowserbaseResearchProvider:
                             )
                         )
         except Exception:
-            return self._fallback_research(dataset, samples)
+            return self._fallback_research(dataset, samples, research_type)
 
         if not sources:
-            return self._fallback_research(dataset, samples)
+            return self._fallback_research(dataset, samples, research_type)
 
-        summary = self.llm.summarize_research(dataset, samples, sources)
+        summary = self.llm.summarize_research(dataset, samples, sources, research_type)
         return ResearchArtifact(
             dataset_id=dataset.id,
             language_code=dataset.language_code,
+            type=research_type,
             summary=summary,
-            guidelines=[
-                "Use Universal Dependencies UPOS tags for every token.",
-                "Prefer language-specific grammar notes from the cached research when the surface form is ambiguous.",
-                "Mark uncertain or borrowed words as X only when no stronger UPOS category is justified.",
-                "Keep punctuation as PUNCT and numerals as NUM.",
-            ],
+            guidelines=self._guidelines(research_type),
             sources=sources,
         )
+
+    def _research_query(self, dataset: Dataset, research_type: str) -> str:
+        if research_type == "translation":
+            return (
+                f"{dataset.language_name} language Spanish translation parallel corpus "
+                "orthography grammar morphology translation notes"
+            )
+        return (
+            f"{dataset.language_name} language part of speech grammar annotation "
+            "Universal Dependencies POS morphology"
+        )
+
+    def _guidelines(self, research_type: str) -> list[str]:
+        if research_type == "translation":
+            return [
+                "Preserve the source sentence meaning before attempting literal word-by-word alignment.",
+                "Use existing reviewer-approved translations as stronger evidence than generated suggestions.",
+                "Keep named entities, numbers, and punctuation consistent unless the target language convention differs.",
+                "Flag uncertain translations for human review instead of over-normalizing low-resource forms.",
+            ]
+        return [
+            "Use Universal Dependencies UPOS tags for every token.",
+            "Prefer language-specific grammar notes from the cached research when the surface form is ambiguous.",
+            "Mark uncertain or borrowed words as X only when no stronger UPOS category is justified.",
+            "Keep punctuation as PUNCT and numerals as NUM.",
+        ]
 
     def _extract_search_results(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         candidates = (
@@ -99,24 +118,39 @@ class BrowserbaseResearchProvider:
         return results
 
     def _fallback_research(
-        self, dataset: Dataset, samples: list[str]
+        self, dataset: Dataset, samples: list[str], research_type: str = "pos"
     ) -> ResearchArtifact:
         sample_preview = (
             "; ".join(samples[:3]) if samples else "No samples uploaded yet."
         )
+        if research_type == "translation":
+            return ResearchArtifact(
+                dataset_id=dataset.id,
+                language_code=dataset.language_code,
+                type=research_type,
+                summary=(
+                    f"{dataset.language_name} translation profile for this dataset. "
+                    f"Use uploaded examples as local evidence for Spanish-to-{dataset.language_name} suggestions: "
+                    f"{sample_preview}"
+                ),
+                guidelines=self._guidelines(research_type),
+                sources=[
+                    ResearchSource(
+                        title="Dataset translation samples",
+                        url="local://uploaded-samples",
+                        excerpt="Fallback translation guidance is based on uploaded rows and reviewer corrections.",
+                    )
+                ],
+            )
         return ResearchArtifact(
             dataset_id=dataset.id,
             language_code=dataset.language_code,
+            type=research_type,
             summary=(
                 f"{dataset.language_name} annotation profile for this dataset. "
                 f"Use the uploaded examples as the strongest local evidence: {sample_preview}"
             ),
-            guidelines=[
-                "Annotate each token with one Universal Dependencies UPOS tag.",
-                "Use sentence context before relying on isolated word shape.",
-                "Use PROPN for names, NUM for numeric tokens, PUNCT for punctuation, and X for unclear residual tokens.",
-                "Preserve reviewer edits as stronger evidence than generated suggestions.",
-            ],
+            guidelines=self._guidelines(research_type),
             sources=[
                 ResearchSource(
                     title="Universal Dependencies UPOS",
@@ -135,20 +169,17 @@ class ConfigurableLLMClient:
         self.model = self.settings.llm_model
 
     def summarize_research(
-        self, dataset: Dataset, samples: list[str], sources: list[ResearchSource]
+        self, dataset: Dataset, samples: list[str], sources: list[ResearchSource], research_type: str = "pos"
     ) -> str:
         if not self.base_url or not self.api_key:
-            return (
-                f"{dataset.language_name} research notes synthesized from {len(sources)} source(s). "
-                "Focus on UPOS consistency, morphology cues, particles, auxiliaries, and ambiguous borrowed forms."
-            )
+            return self._fallback_summary(dataset, sources, research_type)
 
         prompt = {
             "language": dataset.language_name,
             "language_code": dataset.language_code,
             "samples": samples[:10],
             "sources": [source.model_dump() for source in sources],
-            "task": "Summarize POS annotation guidance for low-resource language dataset review.",
+            "task": self._task_prompt(research_type),
         }
         try:
             with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
@@ -169,10 +200,23 @@ class ConfigurableLLMClient:
                 response.raise_for_status()
                 return response.json()["choices"][0]["message"]["content"]
         except Exception:
+            return self._fallback_summary(dataset, sources, research_type)
+
+    def _task_prompt(self, research_type: str) -> str:
+        if research_type == "translation":
+            return "Summarize translation guidance for low-resource Spanish-to-target-language dataset review."
+        return "Summarize POS annotation guidance for low-resource language dataset review."
+
+    def _fallback_summary(self, dataset: Dataset, sources: list[ResearchSource], research_type: str) -> str:
+        if research_type == "translation":
             return (
-                f"{dataset.language_name} research notes synthesized from {len(sources)} source(s). "
-                "Focus on UPOS consistency, morphology cues, particles, auxiliaries, and ambiguous borrowed forms."
+                f"{dataset.language_name} translation notes synthesized from {len(sources)} source(s). "
+                "Focus on meaning preservation, phrase alignment, orthography, and reviewer-approved corrections."
             )
+        return (
+            f"{dataset.language_name} research notes synthesized from {len(sources)} source(s). "
+            "Focus on UPOS consistency, morphology cues, particles, auxiliaries, and ambiguous borrowed forms."
+        )
 
 
 class PosAnnotationProvider:
