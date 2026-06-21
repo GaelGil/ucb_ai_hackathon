@@ -228,9 +228,9 @@ def test_translation_csv_import_uses_required_columns(client: TestClient) -> Non
             "source_type": "csv",
             "import_kind": "translation",
             "text": (
-                "text,translation,source,src,target\n"
-                "hello world,tlasohkamati,axolotl,sp,nah\n"
-                "missing translation,,axolotl,sp,nah\n"
+                "text,translation,source,src,target,source_id_or_reference\n"
+                "hello world,tlasohkamati,axolotl,es,nah,1\n"
+                "missing translation,,axolotl,es,nah,2\n"
             ),
         },
     ).json()
@@ -246,7 +246,7 @@ def test_translation_csv_import_uses_required_columns(client: TestClient) -> Non
     assert response["created_labels"][0]["value"] == {
         "text": "tlasohkamati",
         "source": "axolotl",
-        "src": "sp",
+        "src": "es",
         "target": "nah",
     }
 

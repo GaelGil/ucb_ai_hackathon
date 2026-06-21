@@ -372,7 +372,7 @@ const IMPORT_KIND_OPTIONS = [
 
 function csvFormatHint(importKind: ImportKind) {
   if (importKind === "translation") {
-    return "CSV columns: text,translation,source,src,target";
+    return "Required columns: text,translation,source,src,target. Extra metadata columns are allowed.";
   }
   if (importKind === "pos") {
     return "CSV columns: text,tags. Tags must be UPOS values matching text tokens.";
