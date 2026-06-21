@@ -575,7 +575,7 @@ export function App() {
         }}
       >
         <Group h="100%" px="md" wrap="nowrap">
-          <Title order={1} size="h3" lh={1.1} truncate>
+          <Title order={1} size="h3" lh={1.1} lineClamp={1}>
             {selectedDataset?.language_name ?? "Language"}
           </Title>
         </Group>
@@ -612,10 +612,10 @@ export function App() {
                   LB
                 </ThemeIcon>
                 <Box style={{ minWidth: 0 }}>
-                  <Text fw={850} lh={1} size="lg" truncate>
+                  <Text fw={850} lh={1} size="lg" truncate="end">
                     LangBase
                   </Text>
-                  <Text c="dimmed" size="xs" truncate>
+                  <Text c="dimmed" size="xs" truncate="end">
                     Low-resource AI workspace
                   </Text>
                 </Box>
@@ -707,10 +707,10 @@ export function App() {
                         variant={dataset.id === selectedDataset?.id ? "light" : "subtle"}
                       >
                         <Box style={{ minWidth: 0, textAlign: "left" }}>
-                          <Text fw={700} size="sm" truncate>
+                          <Text fw={700} size="sm" truncate="end">
                             {dataset.name}
                           </Text>
-                          <Text c="dimmed" size="xs" truncate>
+                          <Text c="dimmed" size="xs" truncate="end">
                             {dataset.language_name} · {dataset.language_code}
                           </Text>
                         </Box>
@@ -1284,7 +1284,7 @@ function ImportsTable({ imports, loading = false }: { imports: ImportRecord[]; l
         id: "file",
         header: "File",
         cell: info => (
-          <Text maw={280} size="sm" truncate>
+          <Text maw={280} size="sm" truncate="end">
             {info.getValue()}
           </Text>
         ),
@@ -1381,7 +1381,7 @@ function OcrSuggestionsTable({
         header: "Image/PDF",
         cell: info => (
           <Box maw={260}>
-            <Text fw={700} size="sm" truncate>
+            <Text fw={700} size="sm" truncate="end">
               {info.getValue()}
             </Text>
             <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
