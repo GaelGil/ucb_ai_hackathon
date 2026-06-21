@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.src.api.mappers import (
@@ -154,36 +155,47 @@ class LabelsService:
         dataset_id: str,
         suggestion_type: SuggestionType | None = None,
         status: SuggestionStatus | None = None,
-        limit: int | None = None,
-    ) -> list[Suggestion]:
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[list[Suggestion], int]:
         self._get_dataset(dataset_id)
-        statement = select(AiSuggestion).where(AiSuggestion.dataset_id == dataset_id).order_by(AiSuggestion.created_at)
+        filters = [AiSuggestion.dataset_id == dataset_id]
         if suggestion_type is not None:
-            statement = statement.where(AiSuggestion.label_type == suggestion_type_to_db(suggestion_type))
+            filters.append(AiSuggestion.label_type == suggestion_type_to_db(suggestion_type))
         if status is not None:
-            statement = statement.where(AiSuggestion.status == suggestion_status_to_db(status))
-        if limit:
-            statement = statement.limit(limit)
-        return [ai_suggestion_to_api(suggestion) for suggestion in self.session.exec(statement).all()]
+            filters.append(AiSuggestion.status == suggestion_status_to_db(status))
+
+        total = self.session.exec(select(func.count()).select_from(AiSuggestion).where(*filters)).one()
+        statement = (
+            select(AiSuggestion)
+            .where(*filters)
+            .order_by(AiSuggestion.created_at, AiSuggestion.id)
+            .offset(offset)
+            .limit(limit)
+        )
+        suggestions = [ai_suggestion_to_api(suggestion) for suggestion in self.session.exec(statement).all()]
+        return suggestions, total
 
     def list_labels(
         self,
         dataset_id: str,
         label_type: SuggestionType | None = None,
         source: ApiLabelSource | None = None,
-        limit: int | None = None,
-    ) -> list[ApiLabel]:
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[list[ApiLabel], int]:
         self._get_dataset(dataset_id)
-        statement = select(Label).where(Label.dataset_id == dataset_id).order_by(Label.created_at)
+        filters = [Label.dataset_id == dataset_id]
         if label_type is not None:
-            statement = statement.where(Label.type == suggestion_type_to_db(label_type))
+            filters.append(Label.type == suggestion_type_to_db(label_type))
         if source is not None:
-            statement = statement.where(Label.source == LabelSource(source.value))
-        if limit:
-            statement = statement.limit(limit)
+            filters.append(Label.source == LabelSource(source.value))
+        total = self.session.exec(select(func.count()).select_from(Label).where(*filters)).one()
+        statement = select(Label).where(*filters).order_by(Label.created_at, Label.id).offset(offset).limit(limit)
         from app.src.api.mappers import label_to_api
 
-        return [label_to_api(label) for label in self.session.exec(statement).all()]
+        labels = [label_to_api(label) for label in self.session.exec(statement).all()]
+        return labels, total
 
     def review_suggestion(self, suggestion_id: str, review: SuggestionReview) -> Suggestion:
         suggestion = self.session.get(AiSuggestion, suggestion_id)
@@ -332,23 +344,22 @@ class LabelsService:
         ][:limit]
 
     def _count_trainable_pos_labels(self, dataset_id: str) -> int:
-        return len(
-            self.session.exec(
-                select(Label)
-                .where(Label.dataset_id == dataset_id)
-                .where(Label.type == LabelType.pos)
-                .where(
-                    Label.source.in_(
-                        [
-                            LabelSource.human,
-                            LabelSource.ai_accepted,
-                            LabelSource.ai_updated,
-                            LabelSource.csv_import,
-                        ]
-                    )
+        return self.session.exec(
+            select(func.count())
+            .select_from(Label)
+            .where(Label.dataset_id == dataset_id)
+            .where(Label.type == LabelType.pos)
+            .where(
+                Label.source.in_(
+                    [
+                        LabelSource.human,
+                        LabelSource.ai_accepted,
+                        LabelSource.ai_updated,
+                        LabelSource.csv_import,
+                    ]
                 )
-            ).all()
-        )
+            )
+        ).one()
 
     def _get_dataset(self, dataset_id: str) -> Dataset:
         dataset = self.session.get(Dataset, dataset_id)

@@ -297,10 +297,16 @@ class JobResponse(BaseModel):
 
 class SuggestionsResponse(BaseModel):
     suggestions: list[Suggestion]
+    total: int
+    limit: int
+    offset: int
 
 
 class LabelsResponse(BaseModel):
     labels: list[Label]
+    total: int
+    limit: int
+    offset: int
 
 
 class ResearchResponse(BaseModel):

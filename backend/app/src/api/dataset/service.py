@@ -133,8 +133,9 @@ class DatasetService:
         return dataset
 
     def _get_pos_model(self, dataset_id: str) -> PosModelState:
-        labels = self.session.exec(
-            select(Label)
+        accepted_count = self.session.exec(
+            select(func.count())
+            .select_from(Label)
             .where(Label.dataset_id == dataset_id)
             .where(Label.type == LabelType.pos)
             .where(
@@ -147,8 +148,7 @@ class DatasetService:
                     ]
                 )
             )
-        ).all()
-        accepted_count = len(labels)
+        ).one()
         jobs = self.session.exec(
             select(Job)
             .where(Job.type == "pos_model_training")

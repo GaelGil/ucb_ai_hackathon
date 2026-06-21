@@ -231,6 +231,38 @@ def test_csv_import_can_create_labels(client: TestClient) -> None:
     assert [label["data_text"] for label in translations] == ["hello world", "second row"]
 
 
+def test_labels_endpoint_paginates(client: TestClient) -> None:
+    dataset = client.get("/datasets").json()[0]
+    rows = "\n".join(f"{index},source {index},target {index}" for index in range(25))
+
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={
+            "source_type": "csv",
+            "text": f"id,text,translation\n{rows}\n",
+        },
+    )
+
+    first = client.get(
+        f"/datasets/{dataset['id']}/labels",
+        params={"type": "translation", "limit": 10, "offset": 0},
+    ).json()
+    second = client.get(
+        f"/datasets/{dataset['id']}/labels",
+        params={"type": "translation", "limit": 10, "offset": 10},
+    ).json()
+
+    assert first["total"] == 25
+    assert first["limit"] == 10
+    assert first["offset"] == 0
+    assert len(first["labels"]) == 10
+    assert second["total"] == 25
+    assert second["limit"] == 10
+    assert second["offset"] == 10
+    assert len(second["labels"]) == 10
+    assert {label["id"] for label in first["labels"]}.isdisjoint({label["id"] for label in second["labels"]})
+
+
 def test_translation_csv_import_uses_required_columns(client: TestClient) -> None:
     dataset = client.get("/datasets").json()[0]
 

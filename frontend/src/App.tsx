@@ -12,6 +12,7 @@ import {
   Loader,
   Modal,
   Paper,
+  Pagination,
   ScrollArea,
   Select,
   SimpleGrid,
@@ -50,6 +51,7 @@ const configuredApiBaseUrl =
 const isLocalBrowser =
   typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const API_BASE_URL = configuredApiBaseUrl || (isLocalBrowser ? "http://127.0.0.1:8000" : "");
+const PAGE_SIZE = 10;
 
 const UPOS_TAGS = [
   "ADJ",
@@ -160,6 +162,27 @@ type Label = {
   created_at: string;
 };
 
+type PaginationMeta = {
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+type SuggestionsResponse = PaginationMeta & {
+  suggestions: Suggestion[];
+};
+
+type LabelsResponse = PaginationMeta & {
+  labels: Label[];
+};
+
+type WorkspacePagination = {
+  posSuggestions: number;
+  ocrSuggestions: number;
+  translationSuggestions: number;
+  translationLabels: number;
+};
+
 type PosModel = {
   status: string;
   mode: "demo" | "real";
@@ -235,10 +258,18 @@ const queryKeys = {
   datasets: ["datasets"] as const,
   workspace: (datasetId: string) => ["workspace", datasetId] as const,
   dashboard: (datasetId: string) => [...queryKeys.workspace(datasetId), "dashboard"] as const,
-  suggestions: (datasetId: string, type: SuggestionType, status: SuggestionStatus, limit: number) =>
-    [...queryKeys.workspace(datasetId), "suggestions", type, status, limit] as const,
-  labels: (datasetId: string, type: SuggestionType, limit: number) =>
-    [...queryKeys.workspace(datasetId), "labels", type, limit] as const,
+  suggestionsRoot: (datasetId: string, type: SuggestionType, status: SuggestionStatus) =>
+    [...queryKeys.workspace(datasetId), "suggestions", type, status] as const,
+  suggestions: (
+    datasetId: string,
+    type: SuggestionType,
+    status: SuggestionStatus,
+    limit: number,
+    offset: number,
+  ) => [...queryKeys.suggestionsRoot(datasetId, type, status), limit, offset] as const,
+  labelsRoot: (datasetId: string, type: SuggestionType) => [...queryKeys.workspace(datasetId), "labels", type] as const,
+  labels: (datasetId: string, type: SuggestionType, limit: number, offset: number) =>
+    [...queryKeys.labelsRoot(datasetId, type), limit, offset] as const,
   research: (datasetId: string, type: ResearchType) => [...queryKeys.workspace(datasetId), "research", type] as const,
 };
 
@@ -249,42 +280,60 @@ function useDatasets() {
   });
 }
 
-function useWorkspaceData(datasetId: string, activeTab: WorkspaceTab, activeResearchType: ResearchType) {
+function pageMeta(data: PaginationMeta | undefined, pageIndex: number): PaginationMeta {
+  return data ?? { total: 0, limit: PAGE_SIZE, offset: pageIndex * PAGE_SIZE };
+}
+
+function useWorkspaceData(
+  datasetId: string,
+  activeTab: WorkspaceTab,
+  activeResearchType: ResearchType,
+  pagination: WorkspacePagination,
+) {
   const enabled = datasetId.length > 0;
   const researchPanelVisible = activeTab === "pos" || activeTab === "translate";
+  const posOffset = pagination.posSuggestions * PAGE_SIZE;
+  const ocrOffset = pagination.ocrSuggestions * PAGE_SIZE;
+  const translationSuggestionOffset = pagination.translationSuggestions * PAGE_SIZE;
+  const translationLabelOffset = pagination.translationLabels * PAGE_SIZE;
   const dashboardQuery = useQuery({
     queryKey: queryKeys.dashboard(datasetId),
     queryFn: ({ signal }) => api<Dashboard>(`/datasets/${datasetId}/dashboard`, { signal }),
     enabled,
   });
   const posSuggestionsQuery = useQuery({
-    queryKey: queryKeys.suggestions(datasetId, "pos", "pending", 5),
+    queryKey: queryKeys.suggestions(datasetId, "pos", "pending", PAGE_SIZE, posOffset),
     queryFn: ({ signal }) =>
-      api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=5`, {
-        signal,
-      }),
+      api<SuggestionsResponse>(
+        `/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=${PAGE_SIZE}&offset=${posOffset}`,
+        { signal },
+      ),
     enabled: enabled && activeTab === "pos",
   });
   const ocrSuggestionsQuery = useQuery({
-    queryKey: queryKeys.suggestions(datasetId, "ocr", "pending", 5),
+    queryKey: queryKeys.suggestions(datasetId, "ocr", "pending", PAGE_SIZE, ocrOffset),
     queryFn: ({ signal }) =>
-      api<{ suggestions: Suggestion[] }>(`/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=5`, {
-        signal,
-      }),
+      api<SuggestionsResponse>(
+        `/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=${PAGE_SIZE}&offset=${ocrOffset}`,
+        { signal },
+      ),
     enabled: enabled && activeTab === "ocr",
   });
   const translationSuggestionsQuery = useQuery({
-    queryKey: queryKeys.suggestions(datasetId, "translation", "pending", 5),
+    queryKey: queryKeys.suggestions(datasetId, "translation", "pending", PAGE_SIZE, translationSuggestionOffset),
     queryFn: ({ signal }) =>
-      api<{ suggestions: Suggestion[] }>(
-        `/datasets/${datasetId}/suggestions?type=translation&status=pending&limit=5`,
+      api<SuggestionsResponse>(
+        `/datasets/${datasetId}/suggestions?type=translation&status=pending&limit=${PAGE_SIZE}&offset=${translationSuggestionOffset}`,
         { signal },
       ),
     enabled: enabled && activeTab === "translate",
   });
   const translationLabelsQuery = useQuery({
-    queryKey: queryKeys.labels(datasetId, "translation", 500),
-    queryFn: ({ signal }) => api<{ labels: Label[] }>(`/datasets/${datasetId}/labels?type=translation&limit=500`, { signal }),
+    queryKey: queryKeys.labels(datasetId, "translation", PAGE_SIZE, translationLabelOffset),
+    queryFn: ({ signal }) =>
+      api<LabelsResponse>(`/datasets/${datasetId}/labels?type=translation&limit=${PAGE_SIZE}&offset=${translationLabelOffset}`, {
+        signal,
+      }),
     enabled: enabled && activeTab === "translate",
   });
   const posResearchQuery = useQuery({
@@ -317,6 +366,10 @@ function useWorkspaceData(datasetId: string, activeTab: WorkspaceTab, activeRese
     ocrSuggestions: ocrSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
     translationSuggestions: translationSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
     translationLabels: translationLabelsQuery.data?.labels ?? EMPTY_LABELS,
+    posSuggestionsPage: pageMeta(posSuggestionsQuery.data, pagination.posSuggestions),
+    ocrSuggestionsPage: pageMeta(ocrSuggestionsQuery.data, pagination.ocrSuggestions),
+    translationSuggestionsPage: pageMeta(translationSuggestionsQuery.data, pagination.translationSuggestions),
+    translationLabelsPage: pageMeta(translationLabelsQuery.data, pagination.translationLabels),
     researchByType: {
       pos: posResearchQuery.data ?? null,
       translation: translationResearchQuery.data ?? null,
@@ -398,6 +451,10 @@ function isJobActive(job: Job) {
   return job.status === "queued" || job.status === "running";
 }
 
+function lastPageIndex(total: number) {
+  return Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+}
+
 function assertJobSucceeded(job: Job) {
   if (job.status === "failed") {
     throw new Error(job.error || "Import failed");
@@ -411,7 +468,16 @@ export function App() {
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("upload");
   const [activeResearchType, setActiveResearchType] = useState<ResearchType>("pos");
-  const workspaceData = useWorkspaceData(selectedDatasetId, activeTab, activeResearchType);
+  const [posSuggestionsPage, setPosSuggestionsPage] = useState(0);
+  const [ocrSuggestionsPage, setOcrSuggestionsPage] = useState(0);
+  const [translationSuggestionsPage, setTranslationSuggestionsPage] = useState(0);
+  const [translationLabelsPage, setTranslationLabelsPage] = useState(0);
+  const workspaceData = useWorkspaceData(selectedDatasetId, activeTab, activeResearchType, {
+    posSuggestions: posSuggestionsPage,
+    ocrSuggestions: ocrSuggestionsPage,
+    translationSuggestions: translationSuggestionsPage,
+    translationLabels: translationLabelsPage,
+  });
   const dashboard = workspaceData.dashboard;
   const suggestions = workspaceData.posSuggestions;
   const ocrSuggestions = workspaceData.ocrSuggestions;
@@ -448,13 +514,11 @@ export function App() {
     [dashboard?.imports],
   );
 
-  const pendingPosCount = dashboard?.suggestion_counts["pos:pending"] ?? 0;
   const acceptedPosCount =
     (dashboard?.suggestion_counts["pos:accepted"] ?? 0) +
     (dashboard?.suggestion_counts["pos:updated"] ?? 0) +
     (dashboard?.suggestion_counts["pos:approved"] ?? 0) +
     (dashboard?.suggestion_counts["pos:edited"] ?? 0);
-  const pendingOcrCount = dashboard?.suggestion_counts["ocr:pending"] ?? 0;
   const uploadFileIsCsv = uploadFile?.name.toLowerCase().endsWith(".csv") ?? false;
   const datasetsLoading = datasetsQuery.isLoading;
   const workspaceLoading = workspaceData.isLoading;
@@ -468,10 +532,32 @@ export function App() {
   }, [datasets, datasetsQuery.isSuccess]);
 
   useEffect(() => {
+    setPosSuggestionsPage(0);
+    setOcrSuggestionsPage(0);
+    setTranslationSuggestionsPage(0);
+    setTranslationLabelsPage(0);
     if (!selectedDatasetId) {
       clearWorkspaceState();
     }
   }, [selectedDatasetId]);
+
+  useEffect(() => {
+    setPosSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.posSuggestionsPage.total)));
+  }, [workspaceData.posSuggestionsPage.total]);
+
+  useEffect(() => {
+    setOcrSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.ocrSuggestionsPage.total)));
+  }, [workspaceData.ocrSuggestionsPage.total]);
+
+  useEffect(() => {
+    setTranslationSuggestionsPage(current =>
+      Math.min(current, lastPageIndex(workspaceData.translationSuggestionsPage.total)),
+    );
+  }, [workspaceData.translationSuggestionsPage.total]);
+
+  useEffect(() => {
+    setTranslationLabelsPage(current => Math.min(current, lastPageIndex(workspaceData.translationLabelsPage.total)));
+  }, [workspaceData.translationLabelsPage.total]);
 
   useEffect(() => {
     if (datasetsQuery.error) {
@@ -556,12 +642,22 @@ export function App() {
 
   async function invalidateTranslationLabels(datasetId = selectedDatasetId) {
     if (!datasetId) return;
-    await queryClient.invalidateQueries({ queryKey: queryKeys.labels(datasetId, "translation", 500) });
+    setTranslationLabelsPage(0);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.labelsRoot(datasetId, "translation") });
   }
 
   async function invalidateSuggestions(type: SuggestionType, datasetId = selectedDatasetId) {
     if (!datasetId) return;
-    await queryClient.invalidateQueries({ queryKey: queryKeys.suggestions(datasetId, type, "pending", 5) });
+    if (type === "pos") {
+      setPosSuggestionsPage(0);
+    }
+    if (type === "ocr") {
+      setOcrSuggestionsPage(0);
+    }
+    if (type === "translation") {
+      setTranslationSuggestionsPage(0);
+    }
+    await queryClient.invalidateQueries({ queryKey: queryKeys.suggestionsRoot(datasetId, type, "pending") });
   }
 
   async function invalidateResearch(type: ResearchType, datasetId = selectedDatasetId) {
@@ -1193,10 +1289,13 @@ export function App() {
                 <PosSuggestionsTable
                   suggestions={suggestions}
                   tokenDrafts={tokenDrafts}
+                  pagination={workspaceData.posSuggestionsPage}
+                  pageIndex={posSuggestionsPage}
                   loading={workspaceLoading}
                   working={working}
                   onGenerate={() => void generatePosSuggestions()}
                   onOpenDetail={openDetail}
+                  onPageChange={setPosSuggestionsPage}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
                   onTokenChange={updateTokenDraft}
                 />
@@ -1207,9 +1306,12 @@ export function App() {
                   latestAssetImport={latestAssetImport}
                   suggestions={ocrSuggestions}
                   drafts={ocrDrafts}
+                  pagination={workspaceData.ocrSuggestionsPage}
+                  pageIndex={ocrSuggestionsPage}
                   loading={workspaceLoading}
                   working={working}
                   onOpenDetail={openDetail}
+                  onPageChange={setOcrSuggestionsPage}
                   onRunOcr={() => void runOcr()}
                   onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
@@ -1221,11 +1323,17 @@ export function App() {
                   labels={translationLabels}
                   suggestions={translationSuggestions}
                   drafts={translationDrafts}
+                  labelsPagination={workspaceData.translationLabelsPage}
+                  suggestionsPagination={workspaceData.translationSuggestionsPage}
+                  labelsPageIndex={translationLabelsPage}
+                  suggestionsPageIndex={translationSuggestionsPage}
                   research={researchByType.translation}
                   loading={workspaceLoading}
                   working={working}
                   onGenerate={() => void generateTranslationSuggestions()}
                   onOpenDetail={openDetail}
+                  onLabelsPageChange={setTranslationLabelsPage}
+                  onSuggestionsPageChange={setTranslationSuggestionsPage}
                   onDraftChange={(id, value) => setTranslationDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
                 />
@@ -1613,22 +1721,65 @@ function SuggestionActions({
   );
 }
 
+function PaginatedTableFooter({
+  pagination,
+  pageIndex,
+  onPageChange,
+}: {
+  pagination: PaginationMeta;
+  pageIndex: number;
+  onPageChange: (pageIndex: number) => void;
+}) {
+  if (pagination.total <= 0) {
+    return null;
+  }
+
+  const limit = Math.max(pagination.limit || PAGE_SIZE, 1);
+  const pageCount = Math.max(1, Math.ceil(pagination.total / limit));
+  const start = Math.min(pagination.offset + 1, pagination.total);
+  const end = Math.min(pagination.offset + limit, pagination.total);
+
+  return (
+    <Group justify="space-between" wrap="wrap">
+      <Text c="dimmed" size="sm">
+        Showing {start}-{end} of {pagination.total}
+      </Text>
+      {pageCount > 1 ? (
+        <Pagination
+          color="violet"
+          onChange={value => onPageChange(value - 1)}
+          radius="md"
+          size="sm"
+          total={pageCount}
+          value={Math.min(pageIndex + 1, pageCount)}
+        />
+      ) : null}
+    </Group>
+  );
+}
+
 function PosSuggestionsTable({
   suggestions,
   tokenDrafts,
+  pagination,
+  pageIndex,
   loading,
   working,
   onGenerate,
   onOpenDetail,
+  onPageChange,
   onReview,
   onTokenChange,
 }: {
   suggestions: Suggestion[];
   tokenDrafts: DraftMap;
+  pagination: PaginationMeta;
+  pageIndex: number;
   loading: boolean;
   working: boolean;
   onGenerate: () => void;
   onOpenDetail: (detail: DetailContent) => void;
+  onPageChange: (pageIndex: number) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
   onTokenChange: (suggestionId: string, tokenIndex: number, tag: string | null) => void;
 }) {
@@ -1751,7 +1902,7 @@ function PosSuggestionsTable({
       <Stack gap="md">
         <Group justify="space-between">
           <Text c="dimmed" size="sm">
-            Pending rows: {suggestions.length}
+            Pending rows: {pagination.total}
           </Text>
           <Button disabled={working} onClick={onGenerate}>
             Generate 5 Suggestions
@@ -1791,6 +1942,7 @@ function PosSuggestionsTable({
             </Table>
           </ScrollArea>
         )}
+        <PaginatedTableFooter pagination={pagination} pageIndex={pageIndex} onPageChange={onPageChange} />
       </Stack>
     </PaperPanel>
   );
@@ -1887,9 +2039,12 @@ function OcrSuggestionsTable({
   latestAssetImport,
   suggestions,
   drafts,
+  pagination,
+  pageIndex,
   loading,
   working,
   onOpenDetail,
+  onPageChange,
   onRunOcr,
   onDraftChange,
   onReview,
@@ -1897,9 +2052,12 @@ function OcrSuggestionsTable({
   latestAssetImport: ImportRecord | null;
   suggestions: Suggestion[];
   drafts: TextDraftMap;
+  pagination: PaginationMeta;
+  pageIndex: number;
   loading: boolean;
   working: boolean;
   onOpenDetail: (detail: DetailContent) => void;
+  onPageChange: (pageIndex: number) => void;
   onRunOcr: () => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
@@ -1989,9 +2147,14 @@ function OcrSuggestionsTable({
     <PaperPanel title="OCR" eyebrow="Image/PDF, text on screen, suggestions">
       <Stack gap="md">
         <Group justify="space-between">
-          <Text c="dimmed" size="sm">
-            Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
-          </Text>
+          <Box>
+            <Text c="dimmed" size="sm">
+              Pending rows: {pagination.total}
+            </Text>
+            <Text c="dimmed" size="xs">
+              Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
+            </Text>
+          </Box>
           <Button color="green" disabled={working || !latestAssetImport} onClick={onRunOcr}>
             Run OCR
           </Button>
@@ -2030,6 +2193,7 @@ function OcrSuggestionsTable({
             </Table>
           </ScrollArea>
         )}
+        <PaginatedTableFooter pagination={pagination} pageIndex={pageIndex} onPageChange={onPageChange} />
       </Stack>
     </PaperPanel>
   );
@@ -2044,22 +2208,34 @@ function TranslationTable({
   labels,
   suggestions,
   drafts,
+  labelsPagination,
+  suggestionsPagination,
+  labelsPageIndex,
+  suggestionsPageIndex,
   research,
   loading,
   working,
   onGenerate,
   onOpenDetail,
+  onLabelsPageChange,
+  onSuggestionsPageChange,
   onDraftChange,
   onReview,
 }: {
   labels: Label[];
   suggestions: Suggestion[];
   drafts: TextDraftMap;
+  labelsPagination: PaginationMeta;
+  suggestionsPagination: PaginationMeta;
+  labelsPageIndex: number;
+  suggestionsPageIndex: number;
   research: ResearchArtifact | null;
   loading: boolean;
   working: boolean;
   onGenerate: () => void;
   onOpenDetail: (detail: DetailContent) => void;
+  onLabelsPageChange: (pageIndex: number) => void;
+  onSuggestionsPageChange: (pageIndex: number) => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
 }) {
@@ -2222,7 +2398,7 @@ function TranslationTable({
       <Stack gap="md">
         <Group justify="space-between" wrap="wrap">
           <Text c="dimmed" size="sm">
-            Pending suggestions: {suggestions.length}
+            Pending suggestions: {suggestionsPagination.total}
           </Text>
           <Button disabled={working || !research} onClick={onGenerate}>
             Generate 5 Suggestions
@@ -2267,9 +2443,14 @@ function TranslationTable({
             No pending translation suggestions.
           </Text>
         )}
+        <PaginatedTableFooter
+          pagination={suggestionsPagination}
+          pageIndex={suggestionsPageIndex}
+          onPageChange={onSuggestionsPageChange}
+        />
         <Divider />
         <Text fw={700} size="sm">
-          Saved translation labels
+          Saved translation labels: {labelsPagination.total}
         </Text>
         {labels.length === 0 ? (
           <Text c="dimmed" size="sm">
@@ -2301,6 +2482,11 @@ function TranslationTable({
             </Table>
           </ScrollArea>
         )}
+        <PaginatedTableFooter
+          pagination={labelsPagination}
+          pageIndex={labelsPageIndex}
+          onPageChange={onLabelsPageChange}
+        />
       </Stack>
     </PaperPanel>
   );

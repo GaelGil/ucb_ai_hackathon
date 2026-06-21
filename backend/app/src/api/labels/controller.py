@@ -47,10 +47,12 @@ def list_suggestions(
     dataset_id: str,
     type: SuggestionType | None = None,
     status: SuggestionStatus | None = None,
-    limit: int | None = Query(default=None, ge=1, le=100),
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     service: LabelsService = Depends(get_labels_service),
 ) -> SuggestionsResponse:
-    return SuggestionsResponse(suggestions=service.list_suggestions(dataset_id, type, status, limit))
+    suggestions, total = service.list_suggestions(dataset_id, type, status, limit, offset)
+    return SuggestionsResponse(suggestions=suggestions, total=total, limit=limit, offset=offset)
 
 
 @router.get("/datasets/{dataset_id}/labels", response_model=LabelsResponse)
@@ -58,10 +60,12 @@ def list_labels(
     dataset_id: str,
     type: SuggestionType | None = None,
     source: LabelSource | None = None,
-    limit: int | None = Query(default=None, ge=1, le=500),
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     service: LabelsService = Depends(get_labels_service),
 ) -> LabelsResponse:
-    return LabelsResponse(labels=service.list_labels(dataset_id, type, source, limit))
+    labels, total = service.list_labels(dataset_id, type, source, limit, offset)
+    return LabelsResponse(labels=labels, total=total, limit=limit, offset=offset)
 
 
 @router.patch("/suggestions/{suggestion_id}", response_model=Suggestion)
