@@ -9,9 +9,11 @@ import httpx
 from app.src.config import Settings, get_settings
 from app.src.models import (
     Dataset,
+    ProviderWarning,
     ResearchArtifact,
     ResearchSource,
     TokenSuggestion,
+    TranslationProviderResult,
     UploadedAsset,
 )
 
@@ -30,7 +32,12 @@ class BrowserbaseResearchProvider:
 
     def create_research(self, dataset: Dataset, samples: list[str], research_type: str = "pos") -> ResearchArtifact:
         if not self.api_key:
-            return self._fallback_research(dataset, samples, research_type)
+            return self._fallback_research(
+                dataset,
+                samples,
+                research_type,
+                self._warning("browserbase", "search", "BROWSERBASE_API_KEY is not configured."),
+            )
 
         query = self._research_query(dataset, research_type)
         headers = {"x-bb-api-key": self.api_key, "Content-Type": "application/json"}
@@ -61,13 +68,23 @@ class BrowserbaseResearchProvider:
                                 excerpt=str(content)[:900],
                             )
                         )
-        except Exception:
-            return self._fallback_research(dataset, samples, research_type)
+        except Exception as exc:
+            return self._fallback_research(
+                dataset,
+                samples,
+                research_type,
+                self._warning("browserbase", "search", f"Browserbase research failed: {exc}"),
+            )
 
         if not sources:
-            return self._fallback_research(dataset, samples, research_type)
+            return self._fallback_research(
+                dataset,
+                samples,
+                research_type,
+                self._warning("browserbase", "fetch", "Browserbase returned no usable sources."),
+            )
 
-        summary = self.llm.summarize_research(dataset, samples, sources, research_type)
+        summary, warning = self.llm.summarize_research(dataset, samples, sources, research_type)
         return ResearchArtifact(
             dataset_id=dataset.id,
             language_code=dataset.language_code,
@@ -75,6 +92,7 @@ class BrowserbaseResearchProvider:
             summary=summary,
             guidelines=self._guidelines(research_type),
             sources=sources,
+            warnings=[warning] if warning else [],
         )
 
     def _research_query(self, dataset: Dataset, research_type: str) -> str:
@@ -118,7 +136,11 @@ class BrowserbaseResearchProvider:
         return results
 
     def _fallback_research(
-        self, dataset: Dataset, samples: list[str], research_type: str = "pos"
+        self,
+        dataset: Dataset,
+        samples: list[str],
+        research_type: str = "pos",
+        warning: ProviderWarning | None = None,
     ) -> ResearchArtifact:
         sample_preview = (
             "; ".join(samples[:3]) if samples else "No samples uploaded yet."
@@ -141,6 +163,7 @@ class BrowserbaseResearchProvider:
                         excerpt="Fallback translation guidance is based on uploaded rows and reviewer corrections.",
                     )
                 ],
+                warnings=[warning] if warning else [],
             )
         return ResearchArtifact(
             dataset_id=dataset.id,
@@ -158,7 +181,11 @@ class BrowserbaseResearchProvider:
                     excerpt="Universal POS tags provide the default cross-lingual tag schema for this MVP.",
                 )
             ],
+            warnings=[warning] if warning else [],
         )
+
+    def _warning(self, provider: str, stage: str, message: str) -> ProviderWarning:
+        return ProviderWarning(provider=provider, stage=stage, message=message, fallback=True)
 
 
 class ConfigurableLLMClient:
@@ -170,9 +197,14 @@ class ConfigurableLLMClient:
 
     def summarize_research(
         self, dataset: Dataset, samples: list[str], sources: list[ResearchSource], research_type: str = "pos"
-    ) -> str:
+    ) -> tuple[str, ProviderWarning | None]:
         if not self.base_url or not self.api_key:
-            return self._fallback_summary(dataset, sources, research_type)
+            return self._fallback_summary(dataset, sources, research_type), ProviderWarning(
+                provider="llm",
+                stage="summary",
+                message="LLM_BASE_URL or LLM_API_KEY is not configured.",
+                fallback=True,
+            )
 
         prompt = {
             "language": dataset.language_name,
@@ -198,9 +230,14 @@ class ConfigurableLLMClient:
                     },
                 )
                 response.raise_for_status()
-                return response.json()["choices"][0]["message"]["content"]
-        except Exception:
-            return self._fallback_summary(dataset, sources, research_type)
+                return response.json()["choices"][0]["message"]["content"], None
+        except Exception as exc:
+            return self._fallback_summary(dataset, sources, research_type), ProviderWarning(
+                provider="llm",
+                stage="summary",
+                message=f"LLM summary failed: {exc}",
+                fallback=True,
+            )
 
     def _task_prompt(self, research_type: str) -> str:
         if research_type == "translation":
@@ -321,7 +358,8 @@ class TranslationProvider:
 
     def translate(
         self, text: str, direction: str = "spanish_to_nahuatl"
-    ) -> tuple[str, str, str]:
+    ) -> TranslationProviderResult:
+        warning: ProviderWarning | None = None
         if self.endpoint_url:
             try:
                 with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
@@ -330,21 +368,35 @@ class TranslationProvider:
                     )
                     response.raise_for_status()
                     payload = response.json()
-                    return (
-                        str(payload.get("translation") or payload.get("output_text")),
-                        "aws-neuron-endpoint",
-                        self.model,
+                    return TranslationProviderResult(
+                        output_text=str(payload.get("translation") or payload.get("output_text")),
+                        provider="aws-neuron-endpoint",
+                        model=self.model,
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                warning = ProviderWarning(
+                    provider="aws-neuron-endpoint",
+                    stage="translation",
+                    message=f"Translation endpoint failed: {exc}",
+                    fallback=True,
+                )
+        else:
+            warning = ProviderWarning(
+                provider="aws-neuron-endpoint",
+                stage="translation",
+                message="NAHUATL_MODEL_ENDPOINT_URL is not configured.",
+                fallback=True,
+            )
 
         demo_phrases = {
             "muchas flores son blancas": "miak xochitl istak",
             "el agua corre rapido": "atl motlaloa iciuhca",
             "mi familia habla nahuatl": "nochanehua tlahtoa nahuatlahtolli",
         }
-        return (
-            demo_phrases.get(text.lower(), f"[Nahuatl demo translation] {text}"),
-            "local-demo",
-            self.model,
+        return TranslationProviderResult(
+            output_text=demo_phrases.get(text.lower(), f"[Nahuatl demo translation] {text}"),
+            provider="local-demo",
+            model=self.model,
+            used_fallback=True,
+            warning=warning,
         )

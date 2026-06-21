@@ -50,6 +50,8 @@ def test_text_pos_research_review_and_training_flow(client: TestClient) -> None:
         json={"minimum_examples": 20, "demo_override": True},
     ).json()
     assert trained["pos_model"]["status"] == "ready"
+    assert trained["pos_model"]["mode"] == "demo"
+    assert trained["pos_model"]["minimum_examples_met"] is False
     assert trained["pos_model"]["accepted_sentence_count"] == 1
 
 
@@ -61,6 +63,16 @@ def test_research_is_cached_per_dataset_language(client: TestClient) -> None:
 
     assert first["research"]["id"] == second["research"]["id"]
     assert second["job"]["metadata"]["cached"] is True
+
+
+def test_research_fallback_is_visible_in_metadata(client: TestClient) -> None:
+    dataset = client.get("/datasets").json()[0]
+
+    response = client.post(f"/datasets/{dataset['id']}/research").json()
+
+    assert response["job"]["metadata"]["used_fallback"] is True
+    assert response["job"]["metadata"]["warnings"]
+    assert response["research"]["warnings"]
 
 
 def test_research_is_separate_by_type(client: TestClient) -> None:
@@ -90,6 +102,26 @@ def test_pos_suggestions_require_pos_research(client: TestClient) -> None:
     assert response["suggestions"] == []
     assert response["job"]["status"] == "failed"
     assert "POS research must be generated" in response["job"]["error"]
+
+
+def test_denied_pos_suggestion_can_be_regenerated(client: TestClient) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "Regenerate denied", "language_code": "regen", "language_name": "Regenerate"},
+    ).json()
+    client.post(
+        f"/datasets/{dataset['id']}/imports",
+        json={"text": "uno dos tres", "source_type": "text"},
+    )
+    client.post(f"/datasets/{dataset['id']}/research").json()
+    first = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()["suggestions"]
+    client.patch(f"/suggestions/{first[0]['id']}", json={"action": "denied"})
+
+    second = client.post(f"/datasets/{dataset['id']}/pos-suggestions", json={"limit": 5}).json()["suggestions"]
+
+    assert len(second) == 1
+    assert second[0]["original_text"] == "uno dos tres"
+    assert second[0]["id"] != first[0]["id"]
 
 
 def test_translation_suggestions_require_translation_research(client: TestClient) -> None:
@@ -299,3 +331,5 @@ def test_translation_demo_fallback(client: TestClient) -> None:
 
     assert response["output_text"] == "miak xochitl istak"
     assert response["provider"] == "local-demo"
+    assert response["used_fallback"] is True
+    assert response["warning"]["provider"] == "aws-neuron-endpoint"

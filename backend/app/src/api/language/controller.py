@@ -15,5 +15,5 @@ def translate(
     payload: TranslationRequest,
     service: LanguageService = Depends(get_language_service),
 ) -> TranslationResponse:
-    output_text, provider, model = service.translate(payload.text, payload.direction)
-    return TranslationResponse(input_text=payload.text, output_text=output_text, provider=provider, model=model)
+    result = service.translate(payload.text, payload.direction)
+    return TranslationResponse(input_text=payload.text, **result.model_dump())

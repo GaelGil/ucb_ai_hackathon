@@ -71,6 +71,13 @@ class PosModelStatus(StrEnum):
     FAILED = "failed"
 
 
+class ProviderWarning(BaseModel):
+    provider: str
+    stage: str
+    message: str
+    fallback: bool = True
+
+
 UPOS_TAGS = {
     "ADJ",
     "ADP",
@@ -168,6 +175,7 @@ class ResearchArtifact(BaseModel):
     summary: str
     guidelines: list[str] = Field(default_factory=list)
     sources: list[ResearchSource] = Field(default_factory=list)
+    warnings: list[ProviderWarning] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -232,11 +240,21 @@ class TranslationRequest(BaseModel):
     direction: str = "spanish_to_nahuatl"
 
 
+class TranslationProviderResult(BaseModel):
+    output_text: str
+    provider: str
+    model: str
+    used_fallback: bool = False
+    warning: ProviderWarning | None = None
+
+
 class TranslationResponse(BaseModel):
     input_text: str
     output_text: str
     provider: str
     model: str
+    used_fallback: bool = False
+    warning: ProviderWarning | None = None
 
 
 class PosTrainingRequest(BaseModel):
@@ -247,6 +265,8 @@ class PosTrainingRequest(BaseModel):
 class PosModelState(BaseModel):
     dataset_id: str
     status: PosModelStatus = PosModelStatus.NOT_STARTED
+    mode: str = "real"
+    minimum_examples_met: bool = False
     accepted_sentence_count: int = 0
     minimum_examples: int = 20
     metrics: dict[str, float] = Field(default_factory=dict)

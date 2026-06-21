@@ -126,6 +126,7 @@ def job_to_api(job: Job) -> api.Job:
 
 
 def research_to_api(dataset: Dataset, language: Language, research: Research) -> api.ResearchArtifact:
+    warnings = research.research_metadata.get("warnings", [])
     return api.ResearchArtifact(
         id=research.id,
         dataset_id=dataset.id,
@@ -134,6 +135,7 @@ def research_to_api(dataset: Dataset, language: Language, research: Research) ->
         summary=research.notes or "",
         guidelines=[str(item) for item in research.research_metadata.get("guidelines", [])],
         sources=[_research_source(source) for source in research.sources],
+        warnings=[api.ProviderWarning.model_validate(warning) for warning in warnings],
         created_at=research.created_at,
         updated_at=research.updated_at,
     )

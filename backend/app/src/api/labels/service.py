@@ -104,8 +104,19 @@ class LabelsService:
             del job
             candidates = self._candidate_text_rows(dataset.id, LabelType.translation, limit)
             direction = f"spanish_to_{dataset.language.code}"
+            warnings: list[dict] = []
             for row in candidates:
-                translated_text, provider, model = self.translation_provider.translate(row.text_content or "", direction)
+                result = self.translation_provider.translate(row.text_content or "", direction)
+                if result.used_fallback and result.warning:
+                    warning = result.warning.model_dump(mode="json")
+                    warnings.append(warning)
+                    with self.research_service.tracer.span(
+                        "translation.fallback",
+                        dataset_id=dataset.id,
+                        provider=warning.get("provider"),
+                        stage=warning.get("stage"),
+                    ):
+                        pass
                 suggestion = AiSuggestion(
                     dataset_id=dataset.id,
                     data_row_id=row.id,
@@ -113,13 +124,13 @@ class LabelsService:
                     label_type=LabelType.translation,
                     original_value={
                         "source_text": row.text_content,
-                        "text": translated_text,
+                        "text": result.output_text,
                         "direction": direction,
                     },
                     confidence=0.72,
                     rationale=f"Generated with cached translation research profile {research.id}.",
-                    provider=provider,
-                    model_name=model,
+                    provider=result.provider,
+                    model_name=result.model,
                 )
                 self.session.add(suggestion)
                 created.append(suggestion)
@@ -131,6 +142,8 @@ class LabelsService:
                 "created_count": len(created),
                 "research_id": research.id,
                 "research_type": ResearchType.translation.value,
+                "used_fallback": bool(warnings),
+                "warnings": warnings,
             }
 
         job = self.jobs.run("translation_suggestions", callback)
@@ -195,13 +208,17 @@ class LabelsService:
     def train_pos_model(self, dataset_id: str, request: PosTrainingRequest) -> tuple[PosModelState, ApiJob]:
         dataset = self._get_dataset(dataset_id)
         accepted_count = self._count_trainable_pos_labels(dataset.id)
+        minimum_examples_met = accepted_count >= request.minimum_examples
+        training_mode = "demo" if request.demo_override else "real"
         model_holder: dict[str, PosModelState] = {}
 
         def callback(job: ApiJob) -> dict:
-            if accepted_count < request.minimum_examples and not request.demo_override:
+            if not minimum_examples_met and not request.demo_override:
                 state = PosModelState(
                     dataset_id=dataset.id,
                     status=PosModelStatus.NEEDS_MORE_DATA,
+                    mode=training_mode,
+                    minimum_examples_met=minimum_examples_met,
                     accepted_sentence_count=accepted_count,
                     minimum_examples=request.minimum_examples,
                     job_id=job.id,
@@ -210,10 +227,12 @@ class LabelsService:
                 state = PosModelState(
                     dataset_id=dataset.id,
                     status=PosModelStatus.READY,
+                    mode=training_mode,
+                    minimum_examples_met=minimum_examples_met,
                     accepted_sentence_count=accepted_count,
                     minimum_examples=request.minimum_examples,
                     metrics={
-                        "upos_accuracy": 0.82 if accepted_count < request.minimum_examples else 0.9,
+                        "upos_accuracy": 0.82 if not minimum_examples_met else 0.9,
                         "reviewed_examples": float(accepted_count),
                     },
                     model_name=f"{dataset.language.code}-upos-token-classifier-demo",
@@ -224,6 +243,10 @@ class LabelsService:
                 "dataset_id": dataset.id,
                 "ready": state.status == PosModelStatus.READY,
                 "accepted_sentence_count": accepted_count,
+                "demo_override": request.demo_override,
+                "training_mode": training_mode,
+                "minimum_examples": request.minimum_examples,
+                "minimum_examples_met": minimum_examples_met,
                 "pos_model": state.model_dump(mode="json"),
             }
 
@@ -245,7 +268,11 @@ class LabelsService:
         for job in jobs:
             if job.job_metadata.get("dataset_id") == dataset_id and job.job_metadata.get("pos_model"):
                 return PosModelState.model_validate(job.job_metadata["pos_model"])
-        return PosModelState(dataset_id=dataset_id, accepted_sentence_count=accepted_count)
+        return PosModelState(
+            dataset_id=dataset_id,
+            accepted_sentence_count=accepted_count,
+            minimum_examples_met=accepted_count >= 20,
+        )
 
     def _upsert_label_for_suggestion(self, suggestion: AiSuggestion) -> None:
         label = self.session.exec(select(Label).where(Label.ai_suggestion_id == suggestion.id)).first()
@@ -283,6 +310,7 @@ class LabelsService:
                 select(AiSuggestion)
                 .where(AiSuggestion.dataset_id == dataset_id)
                 .where(AiSuggestion.label_type == label_type)
+                .where(AiSuggestion.status != DbSuggestionStatus.denied)
             ).all()
         }
         existing_label_row_ids = {
@@ -305,7 +333,21 @@ class LabelsService:
 
     def _count_trainable_pos_labels(self, dataset_id: str) -> int:
         return len(
-            self.session.exec(select(Label).where(Label.dataset_id == dataset_id).where(Label.type == LabelType.pos)).all()
+            self.session.exec(
+                select(Label)
+                .where(Label.dataset_id == dataset_id)
+                .where(Label.type == LabelType.pos)
+                .where(
+                    Label.source.in_(
+                        [
+                            LabelSource.human,
+                            LabelSource.ai_accepted,
+                            LabelSource.ai_updated,
+                            LabelSource.csv_import,
+                        ]
+                    )
+                )
+            ).all()
         )
 
     def _get_dataset(self, dataset_id: str) -> Dataset:
