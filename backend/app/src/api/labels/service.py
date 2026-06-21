@@ -234,12 +234,40 @@ class LabelsService:
                     item[0].id,
                 ),
             )
-            labels = [label_to_api(label) for label, _ in ordered[offset : offset + limit]]
+            page_records = ordered[offset : offset + limit]
+            pending_by_row_id = self._pending_translation_suggestions_by_row_id(
+                dataset_id,
+                [label.data_row_id for label, _ in page_records],
+            )
+            labels = [
+                label_to_api(label, pending_suggestion=pending_by_row_id.get(label.data_row_id))
+                for label, _ in page_records
+            ]
             return labels, total
 
         statement = select(Label).where(*filters).order_by(Label.created_at, Label.id).offset(offset).limit(limit)
         labels = [label_to_api(label) for label in self.session.exec(statement).all()]
         return labels, total
+
+    def _pending_translation_suggestions_by_row_id(
+        self,
+        dataset_id: str,
+        data_row_ids: list[str],
+    ) -> dict[str, AiSuggestion]:
+        if not data_row_ids:
+            return {}
+        suggestions = self.session.exec(
+            select(AiSuggestion)
+            .where(AiSuggestion.dataset_id == dataset_id)
+            .where(AiSuggestion.label_type == LabelType.translation)
+            .where(AiSuggestion.status == DbSuggestionStatus.pending)
+            .where(AiSuggestion.data_row_id.in_(data_row_ids))
+            .order_by(AiSuggestion.created_at, AiSuggestion.id)
+        ).all()
+        by_row_id: dict[str, AiSuggestion] = {}
+        for suggestion in suggestions:
+            by_row_id.setdefault(suggestion.data_row_id, suggestion)
+        return by_row_id
 
     def review_suggestion(self, suggestion_id: str, review: SuggestionReview) -> Suggestion:
         suggestion = self.session.get(AiSuggestion, suggestion_id)
@@ -571,7 +599,7 @@ class LabelsService:
             if not self._is_incomplete_translation_label(label):
                 existing_label_row_ids.add(label.data_row_id)
         excluded_row_ids = existing_suggestion_row_ids | existing_label_row_ids
-        return [
+        rows = [
             row
             for row in self.session.exec(
                 select(DataRow)
@@ -580,7 +608,14 @@ class LabelsService:
                 .order_by(DataRow.created_at)
             ).all()
             if row.id not in excluded_row_ids and row.text_content
-        ][:limit]
+        ]
+        if label_type == LabelType.translation:
+            rows = [row for row in rows if not self._is_pos_seed_row(row)]
+        if label_type == LabelType.pos:
+            seeded_rows = [row for row in rows if self._is_pos_seed_row(row)]
+            if seeded_rows:
+                rows = seeded_rows
+        return rows[:limit]
 
     @staticmethod
     def _is_incomplete_translation_label(label: Label) -> bool:
@@ -588,6 +623,12 @@ class LabelsService:
             return False
         value = label.value or {}
         return not str(value.get("text") or "").strip()
+
+    @staticmethod
+    def _is_pos_seed_row(row: DataRow) -> bool:
+        metadata = row.row_metadata if isinstance(row.row_metadata, dict) else {}
+        pos_seed = metadata.get("pos_seed") if isinstance(metadata, dict) else None
+        return isinstance(pos_seed, dict) and pos_seed.get("source") == "translation_rows"
 
     def _count_trainable_pos_labels(self, dataset_id: str) -> int:
         return self.session.exec(

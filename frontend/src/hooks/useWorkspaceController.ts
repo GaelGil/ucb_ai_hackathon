@@ -37,18 +37,15 @@ export function useWorkspaceController() {
   const [activeResearchType, setActiveResearchType] = useState<ResearchType>("pos");
   const [posSuggestionsPage, setPosSuggestionsPage] = useState(0);
   const [ocrSuggestionsPage, setOcrSuggestionsPage] = useState(0);
-  const [translationSuggestionsPage, setTranslationSuggestionsPage] = useState(0);
   const [translationLabelsPage, setTranslationLabelsPage] = useState(0);
   const workspaceData = useWorkspaceData(selectedDatasetId, activeTab, activeResearchType, {
     posSuggestions: posSuggestionsPage,
     ocrSuggestions: ocrSuggestionsPage,
-    translationSuggestions: translationSuggestionsPage,
     translationLabels: translationLabelsPage,
   });
   const dashboard = workspaceData.dashboard;
   const suggestions = workspaceData.posSuggestions;
   const ocrSuggestions = workspaceData.ocrSuggestions;
-  const translationSuggestions = workspaceData.translationSuggestions;
   const translationLabels = workspaceData.translationLabels;
   const researchByType = workspaceData.researchByType;
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -103,7 +100,6 @@ export function useWorkspaceController() {
   useEffect(() => {
     setPosSuggestionsPage(0);
     setOcrSuggestionsPage(0);
-    setTranslationSuggestionsPage(0);
     setTranslationLabelsPage(0);
     if (!selectedDatasetId) {
       clearWorkspaceState();
@@ -117,12 +113,6 @@ export function useWorkspaceController() {
   useEffect(() => {
     setOcrSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.ocrSuggestionsPage.total)));
   }, [workspaceData.ocrSuggestionsPage.total]);
-
-  useEffect(() => {
-    setTranslationSuggestionsPage(current =>
-      Math.min(current, lastPageIndex(workspaceData.translationSuggestionsPage.total)),
-    );
-  }, [workspaceData.translationSuggestionsPage.total]);
 
   useEffect(() => {
     setTranslationLabelsPage(current => Math.min(current, lastPageIndex(workspaceData.translationLabelsPage.total)));
@@ -208,12 +198,15 @@ export function useWorkspaceController() {
   useEffect(() => {
     setTranslationDrafts(previous => {
       const next = { ...previous };
-      for (const suggestion of translationSuggestions) {
-        next[suggestion.id] ??= suggestion.suggested_text ?? "";
+      for (const label of translationLabels) {
+        const suggestion = label.pending_suggestion;
+        if (suggestion) {
+          next[suggestion.id] ??= suggestion.suggested_text ?? "";
+        }
       }
       return next;
     });
-  }, [translationSuggestions]);
+  }, [translationLabels]);
 
   async function invalidateDatasets() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
@@ -237,9 +230,6 @@ export function useWorkspaceController() {
     }
     if (type === "ocr") {
       setOcrSuggestionsPage(0);
-    }
-    if (type === "translation") {
-      setTranslationSuggestionsPage(0);
     }
     await queryClient.invalidateQueries({ queryKey: queryKeys.suggestionsRoot(datasetId, type, "pending") });
   }
@@ -403,6 +393,7 @@ export function useWorkspaceController() {
       return response;
     }, "Generated translation suggestions", async () => {
       await invalidateSuggestions("translation");
+      await invalidateTranslationLabels();
       await invalidateDashboard();
     });
   }
@@ -557,7 +548,6 @@ export function useWorkspaceController() {
     setToast,
     setTranslationDrafts,
     setTranslationLabelsPage,
-    setTranslationSuggestionsPage,
     setUploadFile,
     sidebarCollapsed,
     suggestions,
@@ -567,8 +557,6 @@ export function useWorkspaceController() {
     translationDrafts,
     translationLabels,
     translationLabelsPage,
-    translationSuggestions,
-    translationSuggestionsPage,
     updateTokenDraft,
     uploadFile,
     uploadFileIsCsv,

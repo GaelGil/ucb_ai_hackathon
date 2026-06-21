@@ -1,6 +1,7 @@
-import { Badge, Box, Button, Divider, Group, ScrollArea, Stack, Table, Text, Textarea } from "@mantine/core";
+import { Badge, Box, Button, Divider, Group, Modal, ScrollArea, Stack, Table, Text, Textarea } from "@mantine/core";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { TbEye, TbWand } from "react-icons/tb";
 
 import { LoadingBlock } from "@/components/ui/LoadingBlock";
 import { PaginatedTableFooter } from "@/components/ui/PaginatedTableFooter";
@@ -21,39 +22,39 @@ import { SuggestionActions } from "./SuggestionActions";
 
 export function TranslationTable({
   labels,
-  suggestions,
   drafts,
   labelsPagination,
-  suggestionsPagination,
   labelsPageIndex,
-  suggestionsPageIndex,
+  pendingSuggestionTotal,
   research,
   loading,
   working,
   onGenerate,
   onOpenDetail,
   onLabelsPageChange,
-  onSuggestionsPageChange,
   onDraftChange,
   onReview,
 }: {
   labels: Label[];
-  suggestions: Suggestion[];
   drafts: TextDraftMap;
   labelsPagination: PaginationMeta;
-  suggestionsPagination: PaginationMeta;
   labelsPageIndex: number;
-  suggestionsPageIndex: number;
+  pendingSuggestionTotal: number;
   research: ResearchArtifact | null;
   loading: boolean;
   working: boolean;
   onGenerate: () => void;
   onOpenDetail: (detail: DetailContent) => void;
   onLabelsPageChange: (pageIndex: number) => void;
-  onSuggestionsPageChange: (pageIndex: number) => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
 }) {
+  const [reviewingSuggestion, setReviewingSuggestion] = useState<Suggestion | null>(null);
+  const reviewingLabel = useMemo(
+    () => labels.find(label => label.pending_suggestion?.id === reviewingSuggestion?.id) ?? null,
+    [labels, reviewingSuggestion],
+  );
+
   const labelColumns = useMemo(() => {
     const columnHelper = createColumnHelper<Label>();
 
@@ -86,7 +87,7 @@ export function TranslationTable({
         id: "translation",
         header: "Translation",
         cell: info => (
-          <Box maw={280} miw={180}>
+          <Box maw={260} miw={180}>
             <PreviewTextButton
               fw={500}
               text={info.getValue()}
@@ -115,86 +116,49 @@ export function TranslationTable({
           </Badge>
         ),
       }),
-    ];
-  }, [onOpenDetail]);
-
-  const suggestionColumns = useMemo(() => {
-    const columnHelper = createColumnHelper<Suggestion>();
-
-    return [
-      columnHelper.accessor("original_text", {
-        header: "Text",
-        cell: info => (
-          <Box maw={260} miw={180}>
-            <PreviewTextButton
-              text={info.getValue()}
-              title="Translation Source"
-              onOpen={() => {
-                const suggestion = info.row.original;
-                onOpenDetail({
-                  title: "Translation Suggestion",
-                  rows: [
-                    { label: "Source Text", value: suggestion.original_text },
-                    { label: "Suggested Translation", value: drafts[suggestion.id] ?? suggestion.suggested_text ?? "" },
-                    { label: "Status", value: suggestion.status },
-                    { label: "Confidence", value: formatPercent(suggestion.confidence) },
-                    { label: "Rationale", value: suggestion.rationale || "No rationale" },
-                    { label: "Suggestion ID", value: suggestion.id },
-                  ],
-                });
-              }}
-            />
-            <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
-              {info.row.original.status}
-            </Badge>
-          </Box>
-        ),
-      }),
       columnHelper.display({
-        id: "translation",
-        header: "Suggested Translation",
+        id: "suggestion",
+        header: "AI Suggestion",
         cell: info => {
-          const suggestion = info.row.original;
+          const suggestion = info.row.original.pending_suggestion;
+          if (!suggestion) {
+            return (
+              <Badge color="gray" radius="sm" variant="light">
+                No pending
+              </Badge>
+            );
+          }
+          const draft = drafts[suggestion.id] ?? suggestion.suggested_text ?? "";
           return (
-            <Textarea
-              aria-label={`Translation for ${suggestion.original_text}`}
-              autoComplete="off"
-              autosize
-              maxRows={3}
-              minRows={2}
-              name={`translation-${suggestion.id}`}
-              onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
-              value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
-              w={320}
-            />
-          );
-        },
-      }),
-      columnHelper.display({
-        id: "actions",
-        header: "Review",
-        cell: info => {
-          const suggestion = info.row.original;
-          return (
-            <Stack gap="xs" miw={240}>
+            <Stack gap={6} miw={220}>
               <Group gap="xs">
+                <Badge color={statusColor(suggestion.status)} radius="sm" variant="dot">
+                  {suggestion.status}
+                </Badge>
                 <Badge color="grape" radius="sm" variant="light">
                   {formatPercent(suggestion.confidence)}
                 </Badge>
-                <Text c="dimmed" size="xs">
-                  AI suggestion
-                </Text>
               </Group>
-              <Text c="dimmed" size="xs">
-                {suggestion.rationale || "Review the suggested translation."}
-              </Text>
-              <SuggestionActions suggestion={suggestion} working={working} onReview={onReview} />
+              <PreviewTextButton
+                fw={500}
+                text={draft}
+                title="Suggested Translation"
+                onOpen={() => setReviewingSuggestion(suggestion)}
+              />
+              <Button
+                leftSection={<TbEye aria-hidden="true" size={15} />}
+                onClick={() => setReviewingSuggestion(suggestion)}
+                size="compact-sm"
+                variant="light"
+              >
+                Review
+              </Button>
             </Stack>
           );
         },
       }),
     ];
-  }, [drafts, onDraftChange, onOpenDetail, onReview, working]);
+  }, [drafts, onOpenDetail]);
 
   const labelTable = useReactTable({
     columns: labelColumns,
@@ -202,20 +166,23 @@ export function TranslationTable({
     getCoreRowModel: getCoreRowModel(),
   });
 
-  const suggestionTable = useReactTable({
-    columns: suggestionColumns,
-    data: suggestions,
-    getCoreRowModel: getCoreRowModel(),
-  });
+  function reviewAndClose(suggestion: Suggestion, action: SuggestionStatus) {
+    onReview(suggestion, action);
+    setReviewingSuggestion(null);
+  }
+
+  const modalDraft = reviewingSuggestion ? drafts[reviewingSuggestion.id] ?? reviewingSuggestion.suggested_text ?? "" : "";
+  const modalSourceText = reviewingLabel?.data_text ?? reviewingSuggestion?.original_text ?? "";
+  const modalCurrentTranslation = reviewingLabel ? translationValue(reviewingLabel) : "";
 
   return (
     <PaperPanel title="Translate" eyebrow="Labels, research, suggestions">
       <Stack gap="md">
         <Group justify="space-between" wrap="wrap">
           <Text c="dimmed" size="sm">
-            Pending suggestions: {suggestionsPagination.total}
+            Saved labels: {labelsPagination.total} | Pending suggestions: {pendingSuggestionTotal}
           </Text>
-          <Button disabled={working || !research} onClick={onGenerate}>
+          <Button disabled={working || !research} leftSection={<TbWand aria-hidden="true" size={16} />} onClick={onGenerate}>
             Generate 5 Suggestions
           </Button>
         </Group>
@@ -225,55 +192,14 @@ export function TranslationTable({
           </Text>
         ) : null}
         {loading ? (
-          <LoadingBlock message="Loading translations…" />
-        ) : suggestions.length > 0 ? (
-          <ScrollArea type="auto">
-            <Table miw={940} highlightOnHover>
-              <Table.Thead>
-                {suggestionTable.getHeaderGroups().map(headerGroup => (
-                  <Table.Tr key={headerGroup.id}>
-                    {headerGroup.headers.map(header => (
-                      <Table.Th key={header.id}>
-                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
-                      </Table.Th>
-                    ))}
-                  </Table.Tr>
-                ))}
-              </Table.Thead>
-              <Table.Tbody>
-                {suggestionTable.getRowModel().rows.map(row => (
-                  <Table.Tr key={row.id}>
-                    {row.getVisibleCells().map(cell => (
-                      <Table.Td key={cell.id} style={{ verticalAlign: "top" }}>
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </Table.Td>
-                    ))}
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </ScrollArea>
-        ) : (
-          <Text c="dimmed" size="sm">
-            No pending translation suggestions.
-          </Text>
-        )}
-        <PaginatedTableFooter
-          pagination={suggestionsPagination}
-          pageIndex={suggestionsPageIndex}
-          onPageChange={onSuggestionsPageChange}
-        />
-        <Divider />
-        <Text fw={700} size="sm">
-          Saved translation labels: {labelsPagination.total}
-        </Text>
-        {labels.length === 0 ? (
+          <LoadingBlock message="Loading translations..." />
+        ) : labels.length === 0 ? (
           <Text c="dimmed" size="sm">
             No translation labels yet. Import a translation CSV or accept AI suggestions.
           </Text>
         ) : (
           <ScrollArea type="auto">
-            <Table miw={780} highlightOnHover>
+            <Table miw={980} highlightOnHover>
               <Table.Thead>
                 {labelTable.getHeaderGroups().map(headerGroup => (
                   <Table.Tr key={headerGroup.id}>
@@ -289,7 +215,9 @@ export function TranslationTable({
                 {labelTable.getRowModel().rows.map(row => (
                   <Table.Tr key={row.id}>
                     {row.getVisibleCells().map(cell => (
-                      <Table.Td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</Table.Td>
+                      <Table.Td key={cell.id} style={{ verticalAlign: "top" }}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </Table.Td>
                     ))}
                   </Table.Tr>
                 ))}
@@ -303,6 +231,57 @@ export function TranslationTable({
           onPageChange={onLabelsPageChange}
         />
       </Stack>
+
+      <Modal
+        centered
+        onClose={() => setReviewingSuggestion(null)}
+        opened={reviewingSuggestion !== null}
+        scrollAreaComponent={ScrollArea.Autosize}
+        size="lg"
+        title="Review Translation Suggestion"
+      >
+        {reviewingSuggestion ? (
+          <Stack gap="md">
+            <Box>
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                Source Text
+              </Text>
+              <Text size="sm" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {modalSourceText || "No source text"}
+              </Text>
+            </Box>
+            <Box>
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                Current Translation
+              </Text>
+              <Text size="sm" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {modalCurrentTranslation || "No saved translation"}
+              </Text>
+            </Box>
+            <Textarea
+              autosize
+              label="Suggested Translation"
+              maxRows={6}
+              minRows={3}
+              onChange={event => onDraftChange(reviewingSuggestion.id, event.currentTarget.value)}
+              value={modalDraft}
+            />
+            <Group gap="xs">
+              <Badge color={statusColor(reviewingSuggestion.status)} radius="sm" variant="dot">
+                {reviewingSuggestion.status}
+              </Badge>
+              <Badge color="grape" radius="sm" variant="light">
+                {formatPercent(reviewingSuggestion.confidence)}
+              </Badge>
+            </Group>
+            <Text c="dimmed" size="sm">
+              {reviewingSuggestion.rationale || "Review the suggested translation."}
+            </Text>
+            <Divider />
+            <SuggestionActions suggestion={reviewingSuggestion} working={working} onReview={reviewAndClose} />
+          </Stack>
+        ) : null}
+      </Modal>
     </PaperPanel>
   );
 }

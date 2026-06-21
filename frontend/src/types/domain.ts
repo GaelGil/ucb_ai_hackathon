@@ -75,6 +75,7 @@ export type Label = {
   source: LabelSource;
   original_column_name: string | null;
   created_at: string;
+  pending_suggestion: Suggestion | null;
 };
 
 export type PaginationMeta = {
@@ -94,7 +95,6 @@ export type LabelsResponse = PaginationMeta & {
 export type WorkspacePagination = {
   posSuggestions: number;
   ocrSuggestions: number;
-  translationSuggestions: number;
   translationLabels: number;
 };
 

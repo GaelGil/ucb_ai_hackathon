@@ -1,6 +1,7 @@
 from sqlmodel import select
 
 from app.src.api.labels.service import LabelsService
+from app.src.models import SuggestionReview, SuggestionStatus as ApiSuggestionStatus
 from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
 from app.src.database.models.data import DataSourceType
 from app.src.database.models.label import LabelSource, LabelType
@@ -131,3 +132,40 @@ def test_accepting_translation_suggestion_reuses_blank_label(session) -> None:
     assert len(labels) == 1
     assert labels[0].ai_suggestion_id == suggestion.id
     assert labels[0].value["text"] == "accepted translation"
+
+
+def test_translation_labels_include_pending_suggestion_for_same_row(session) -> None:
+    dataset_id = _create_translation_dataset(session, language_code="ga", language_name="Irish")
+    enforce_translation_split(session, language_codes=["ga"])
+
+    service = object.__new__(LabelsService)
+    service.session = session
+    row = service._candidate_text_rows(dataset_id, LabelType.translation, limit=1)[0]
+    suggestion = AiSuggestion(
+        dataset_id=dataset_id,
+        data_row_id=row.id,
+        label_type=LabelType.translation,
+        status=SuggestionStatus.pending,
+        original_value={"source_text": row.text_content, "text": "pending translation"},
+        confidence=0.8,
+        rationale="Pending translation suggestion.",
+    )
+    session.add(suggestion)
+    session.commit()
+
+    labels, _ = service.list_labels(dataset_id, "translation", limit=10, offset=0)
+    label = next(label for label in labels if label.data_row_id == row.id)
+
+    assert label.pending_suggestion is not None
+    assert label.pending_suggestion.id == suggestion.id
+    assert label.pending_suggestion.suggested_text == "pending translation"
+
+    service.review_suggestion(
+        suggestion.id,
+        SuggestionReview(action=ApiSuggestionStatus.ACCEPTED),
+    )
+
+    labels, _ = service.list_labels(dataset_id, "translation", limit=10, offset=0)
+    label = next(label for label in labels if label.data_row_id == row.id)
+    assert label.pending_suggestion is None
+    assert label.value["text"] == "pending translation"

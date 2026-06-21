@@ -144,19 +144,16 @@ export function App() {
               <Tabs.Panel value="translate" pt="md">
                 <TranslationTable
                   labels={workspace.translationLabels}
-                  suggestions={workspace.translationSuggestions}
                   drafts={workspace.translationDrafts}
                   labelsPagination={workspace.workspaceData.translationLabelsPage}
-                  suggestionsPagination={workspace.workspaceData.translationSuggestionsPage}
                   labelsPageIndex={workspace.translationLabelsPage}
-                  suggestionsPageIndex={workspace.translationSuggestionsPage}
+                  pendingSuggestionTotal={workspace.dashboard?.suggestion_counts.translation ?? 0}
                   research={workspace.researchByType.translation}
                   loading={workspace.workspaceLoading}
                   working={workspace.working}
                   onGenerate={() => void workspace.generateTranslationSuggestions()}
                   onOpenDetail={workspace.openDetail}
                   onLabelsPageChange={workspace.setTranslationLabelsPage}
-                  onSuggestionsPageChange={workspace.setTranslationSuggestionsPage}
                   onDraftChange={(id, value) => workspace.setTranslationDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void workspace.reviewSuggestion(suggestion, action)}
                 />

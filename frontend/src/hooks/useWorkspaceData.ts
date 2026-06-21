@@ -41,7 +41,6 @@ export function useWorkspaceData(
   const researchPanelVisible = activeTab === "pos" || activeTab === "translate";
   const posOffset = pagination.posSuggestions * PAGE_SIZE;
   const ocrOffset = pagination.ocrSuggestions * PAGE_SIZE;
-  const translationSuggestionOffset = pagination.translationSuggestions * PAGE_SIZE;
   const translationLabelOffset = pagination.translationLabels * PAGE_SIZE;
   const dashboardQuery = useQuery({
     queryKey: queryKeys.dashboard(datasetId),
@@ -66,16 +65,6 @@ export function useWorkspaceData(
         { signal },
       ),
     enabled: enabled && activeTab === "ocr",
-    placeholderData: keepPreviousData,
-  });
-  const translationSuggestionsQuery = useQuery({
-    queryKey: queryKeys.suggestions(datasetId, "translation", "pending", PAGE_SIZE, translationSuggestionOffset),
-    queryFn: ({ signal }) =>
-      api<SuggestionsResponse>(
-        `/datasets/${datasetId}/suggestions?type=translation&status=pending&limit=${PAGE_SIZE}&offset=${translationSuggestionOffset}`,
-        { signal },
-      ),
-    enabled: enabled && activeTab === "translate",
     placeholderData: keepPreviousData,
   });
   const translationLabelsQuery = useQuery({
@@ -106,7 +95,6 @@ export function useWorkspaceData(
     dashboardQuery,
     posSuggestionsQuery,
     ocrSuggestionsQuery,
-    translationSuggestionsQuery,
     translationLabelsQuery,
     posResearchQuery,
     translationResearchQuery,
@@ -116,11 +104,9 @@ export function useWorkspaceData(
     dashboard: dashboardQuery.data ?? null,
     posSuggestions: posSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
     ocrSuggestions: ocrSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
-    translationSuggestions: translationSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
     translationLabels: translationLabelsQuery.data?.labels ?? EMPTY_LABELS,
     posSuggestionsPage: pageMeta(posSuggestionsQuery.data, pagination.posSuggestions),
     ocrSuggestionsPage: pageMeta(ocrSuggestionsQuery.data, pagination.ocrSuggestions),
-    translationSuggestionsPage: pageMeta(translationSuggestionsQuery.data, pagination.translationSuggestions),
     translationLabelsPage: pageMeta(translationLabelsQuery.data, pagination.translationLabels),
     researchByType: {
       pos: posResearchQuery.data ?? null,

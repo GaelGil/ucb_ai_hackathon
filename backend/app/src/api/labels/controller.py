@@ -139,11 +139,12 @@ def list_labels(
     dataset_id: str,
     type: SuggestionType | None = None,
     source: LabelSource | None = None,
+    needs_review: bool = Query(default=False),
     limit: int = Query(default=10, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     service: LabelsService = Depends(get_labels_service),
 ) -> LabelsResponse:
-    labels, total = service.list_labels(dataset_id, type, source, limit, offset)
+    labels, total = service.list_labels(dataset_id, type, source, limit, offset, needs_review=needs_review)
     return LabelsResponse(labels=labels, total=total, limit=limit, offset=offset)
 
 

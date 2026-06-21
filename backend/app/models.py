@@ -159,6 +159,7 @@ class Label(BaseModel):
     source: LabelSource = LabelSource.HUMAN
     original_column_name: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
+    pending_suggestion: Suggestion | None = None
 
 
 class ResearchSource(BaseModel):
