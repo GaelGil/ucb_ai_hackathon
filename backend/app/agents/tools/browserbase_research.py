@@ -16,9 +16,12 @@ environment (the CLI reads it itself).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
+
+from app.core.config import settings
 
 # The agent is asked to visit at least 3 and no more than 5 pages.
 MIN_PAGES = 3
@@ -46,12 +49,19 @@ def _run_browse(args: list[str], timeout: int = 150) -> str:
         raise BrowserbaseError(
             "`browse` CLI not found on PATH. Install it with `npm install -g browse`."
         )
+
+    # Inject the Browserbase key into the subprocess environment explicitly,
+    # so the CLI sees it even if it wasn't exported in the parent shell.
+    env = os.environ.copy()
+    env["BROWSERBASE_API_KEY"] = settings.require_browserbase_api_key()
+
     try:
         proc = subprocess.run(
             ["browse", *args],
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:  # pragma: no cover - environment dependent
         raise BrowserbaseError(f"`browse {' '.join(args)}` timed out") from exc

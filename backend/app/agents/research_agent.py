@@ -26,6 +26,7 @@ from app.agents.tools.browserbase_research import (
     BrowserbaseError,
     gather_research_json,
 )
+from app.core.config import settings
 
 # The latest, most capable Claude model at time of writing.
 MODEL = "claude-opus-4-8"
@@ -117,8 +118,8 @@ def run_research(language_name: str, research_type: str) -> str:
 
     topic = _RESEARCH_TOPICS[_normalize_type(research_type)]
 
-    # Anthropic() reads ANTHROPIC_API_KEY from the environment.
-    client = Anthropic()
+    # Pass the key explicitly so a missing key fails loudly and early.
+    client = Anthropic(api_key=settings.require_anthropic_api_key())
 
     messages: list[dict] = [
         {"role": "user", "content": _build_prompt(language_name, topic)}

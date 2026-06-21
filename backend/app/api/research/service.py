@@ -33,9 +33,11 @@ class ResearchService:
             language_name: Name of the language (e.g. "Tigrinya").
             type: ``"pos"`` or ``"translate"``.
         """
-        language = self._resolve_language(language_name)
+        # Run the agent FIRST. Only touch the database once it succeeds, so a
+        # missing API key or a failed run never leaves a junk language row.
         notes = run_research_agent(language_name, type)
 
+        language = self._resolve_language(language_name)
         research = Research(type=type, notes=notes, language_id=language.id)
         return self.repository.create(research)
 

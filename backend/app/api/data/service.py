@@ -35,12 +35,14 @@ class DataService:
 
         Returns the created ``Data`` rows (one per sentence).
         """
-        language = self._resolve_language(language_name)
+        # Run the agent FIRST. Only touch the database once it succeeds, so a
+        # missing API key, a failed run, or an empty result never leaves a junk
+        # language/dataset row.
         sentences = run_get_more_data(language_name)
-
         if not sentences:
             return []
 
+        language = self._resolve_language(language_name)
         # Group this batch of sentences under a fresh dataset for the language.
         dataset = self.datasets.create(Dataset(language_id=language.id))
 

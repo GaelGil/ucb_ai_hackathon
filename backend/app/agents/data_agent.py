@@ -27,6 +27,7 @@ from app.agents.tools.browserbase_research import (
     BrowserbaseError,
     gather_research_json,
 )
+from app.core.config import settings
 
 MODEL = "claude-opus-4-8"
 MAX_TOKENS = 4096
@@ -104,7 +105,8 @@ def run_get_more_data(
     if not language_name or not language_name.strip():
         raise ValueError("language_name must be a non-empty string.")
 
-    client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+    # Pass the key explicitly so a missing key fails loudly and early.
+    client = Anthropic(api_key=settings.require_anthropic_api_key())
 
     messages: list[dict] = [
         {"role": "user", "content": _build_prompt(language_name, max_sentences)}

@@ -9,5 +9,16 @@ dependencies = [
     "anthropic>=0.40.0",
     "psycopg2-binary>=2.9.12",
     "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
     "sqlmodel>=0.0.38",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+# Put the backend root on sys.path so tests can `import app...`.
+pythonpath = ["."]
+testpaths = ["tests"]
