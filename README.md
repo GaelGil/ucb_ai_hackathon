@@ -50,7 +50,7 @@ ucb_ai_hackathon/
 │   │   ├── config.py         Settings (pydantic-settings)
 │   │   ├── schemas.py        Pydantic request / response schemas
 │   │   ├── exceptions.py     Custom errors
-│   │   ├── routes/           Flask Blueprints — one folder per domain
+│   │   ├── api/              Domain modules — routes + services per feature
 │   │   │   ├── data/         Text & file import
 │   │   │   ├── dataset/      Dataset CRUD + dashboard
 │   │   │   ├── labels/       POS / translation / OCR review
