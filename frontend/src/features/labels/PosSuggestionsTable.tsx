@@ -1,176 +1,199 @@
-import { Badge, Box, Button, Group, ScrollArea, Select, Stack, Table, Text } from "@mantine/core";
+import {
+  ActionIcon,
+  Badge,
+  Box,
+  Button,
+  Divider,
+  Group,
+  Modal,
+  ScrollArea,
+  Select,
+  Stack,
+  Table,
+  Text,
+  Tooltip,
+} from "@mantine/core";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { TbEye, TbWand } from "react-icons/tb";
 
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 import { PaginatedTableFooter } from "@/components/ui/PaginatedTableFooter";
 import { PaperPanel } from "@/components/ui/PaperPanel";
 import { PreviewTextButton } from "@/components/ui/PreviewTextButton";
-import { LoadingBlock } from "@/components/ui/LoadingBlock";
 import { UPOS_TAGS } from "@/lib/constants";
-import { formatPercent, formatTokenDetails, statusColor } from "@/lib/format";
-import type { DetailContent, DraftMap, PaginationMeta, Suggestion, SuggestionStatus } from "@/types/domain";
+import { formatPercent, statusColor } from "@/lib/format";
+import type {
+  AnnotationRow,
+  DetailContent,
+  DraftMap,
+  PaginationMeta,
+  ResearchArtifact,
+  ReviewFilter,
+  Suggestion,
+  SuggestionStatus,
+} from "@/types/domain";
 
 import { SuggestionActions } from "./SuggestionActions";
 
 export function PosSuggestionsTable({
-  suggestions,
+  rows,
   tokenDrafts,
   pagination,
   pageIndex,
+  pendingSuggestionTotal,
+  reviewFilter,
+  research,
   loading,
   working,
   onGenerate,
   onOpenDetail,
   onPageChange,
+  onReviewFilterChange,
   onReview,
   onTokenChange,
 }: {
-  suggestions: Suggestion[];
+  rows: AnnotationRow[];
   tokenDrafts: DraftMap;
   pagination: PaginationMeta;
   pageIndex: number;
+  pendingSuggestionTotal: number;
+  reviewFilter: ReviewFilter;
+  research: ResearchArtifact | null;
   loading: boolean;
   working: boolean;
   onGenerate: () => void;
   onOpenDetail: (detail: DetailContent) => void;
   onPageChange: (pageIndex: number) => void;
+  onReviewFilterChange: (filter: ReviewFilter) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
   onTokenChange: (suggestionId: string, tokenIndex: number, tag: string | null) => void;
 }) {
+  const [reviewingSuggestion, setReviewingSuggestion] = useState<Suggestion | null>(null);
+  const reviewingRow = useMemo(
+    () => rows.find(row => row.pending_suggestion?.id === reviewingSuggestion?.id) ?? null,
+    [rows, reviewingSuggestion],
+  );
+
   const columns = useMemo(() => {
-    const columnHelper = createColumnHelper<Suggestion>();
+    const columnHelper = createColumnHelper<AnnotationRow>();
 
     return [
-      columnHelper.accessor("original_text", {
+      columnHelper.accessor("text", {
         header: "Text",
         cell: info => (
-          <Box maw={260} miw={180}>
+          <Box maw={320} miw={200}>
             <PreviewTextButton
               text={info.getValue()}
               title="POS Text"
               onOpen={() => {
-                const suggestion = info.row.original;
-                const tokens = tokenDrafts[suggestion.id] ?? suggestion.tokens;
+                const row = info.row.original;
                 onOpenDetail({
-                  title: "POS Suggestion",
+                  title: "POS Row",
                   rows: [
-                    { label: "Text", value: suggestion.original_text },
-                    { label: "Status", value: suggestion.status },
-                    { label: "Confidence", value: formatPercent(suggestion.confidence) },
-                    { label: "Rationale", value: suggestion.rationale || "No rationale" },
-                    { label: "Tokens", value: formatTokenDetails(tokens) },
-                    { label: "Suggestion ID", value: suggestion.id },
+                    { label: "Text", value: row.text },
+                    { label: "Status", value: row.pending_suggestion ? "Pending review" : "Needs suggestion" },
+                    { label: "Row ID", value: row.data_row_id },
                   ],
                 });
               }}
             />
-            <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
-              {info.row.original.status}
-            </Badge>
           </Box>
         ),
       }),
       columnHelper.display({
-        id: "tags",
-        header: "Tags",
+        id: "status",
+        header: "Status",
         cell: info => {
-          const suggestion = info.row.original;
-          const tokens = tokenDrafts[suggestion.id] ?? suggestion.tokens;
-
+          const hasSuggestion = Boolean(info.row.original.pending_suggestion);
           return (
-            <Stack gap={6} miw={220}>
-              {tokens.slice(0, 8).map(token => (
-                <Group key={`${suggestion.id}-${token.index}`} gap={6} wrap="nowrap">
-                  <Badge color="gray" radius="sm" variant="light">
-                    {token.token}
-                  </Badge>
-                  <Select
-                    aria-label={`UPOS tag for ${token.token}`}
-                    data={UPOS_TAGS.map(tag => ({ value: tag, label: tag }))}
-                    name={`upos-${suggestion.id}-${token.index}`}
-                    onChange={value => onTokenChange(suggestion.id, token.index, value)}
-                    size="xs"
-                    value={token.suggested_pos}
-                    w={96}
-                  />
-                </Group>
-              ))}
-              {tokens.length > 8 ? (
-                <Button
-                  color="gray"
-                  onClick={() =>
-                    onOpenDetail({
-                      title: "POS Tokens",
-                      rows: [
-                        { label: "Text", value: suggestion.original_text },
-                        { label: "Tokens", value: formatTokenDetails(tokens) },
-                      ],
-                    })
-                  }
-                  size="compact-xs"
-                  variant="subtle"
-                  w="fit-content"
-                >
-                  View {tokens.length - 8} More
-                </Button>
-              ) : null}
-            </Stack>
+            <Badge color={hasSuggestion ? "yellow" : "gray"} radius="sm" variant={hasSuggestion ? "dot" : "light"}>
+              {hasSuggestion ? "Pending review" : "Needs suggestion"}
+            </Badge>
           );
         },
       }),
       columnHelper.display({
-        id: "suggestions",
-        header: "Suggestions",
+        id: "suggestion",
+        header: "AI Suggestion",
         cell: info => {
-          const suggestion = info.row.original;
-
+          const suggestion = info.row.original.pending_suggestion;
+          if (!suggestion) {
+            return null;
+          }
           return (
-            <Stack gap="xs" miw={260}>
-              <Group gap="xs">
-                <Badge color="grape" radius="sm" variant="light">
-                  {formatPercent(suggestion.confidence)}
-                </Badge>
-                <Text c="dimmed" size="xs">
-                  AI suggestion
-                </Text>
-              </Group>
-              <Text c="dimmed" size="xs">
-                {suggestion.rationale || "Review the suggested UPOS tags."}
-              </Text>
-              <SuggestionActions suggestion={suggestion} working={working} onReview={onReview} />
-            </Stack>
+            <Tooltip label="Review suggestion">
+              <ActionIcon aria-label="Review POS suggestion" onClick={() => setReviewingSuggestion(suggestion)} variant="light">
+                <TbEye aria-hidden="true" size={17} />
+              </ActionIcon>
+            </Tooltip>
           );
         },
       }),
     ];
-  }, [onOpenDetail, onReview, onTokenChange, tokenDrafts, working]);
+  }, [onOpenDetail]);
 
   const table = useReactTable({
     columns,
-    data: suggestions,
+    data: rows,
     getCoreRowModel: getCoreRowModel(),
   });
+
+  function reviewAndClose(suggestion: Suggestion, action: SuggestionStatus) {
+    onReview(suggestion, action);
+    setReviewingSuggestion(null);
+  }
+
+  const modalTokens = reviewingSuggestion ? tokenDrafts[reviewingSuggestion.id] ?? reviewingSuggestion.tokens : [];
+  const modalText = reviewingRow?.text ?? reviewingSuggestion?.original_text ?? "";
 
   return (
     <PaperPanel title="POS Tagging" eyebrow="Text, tags, suggestions">
       <Stack gap="md">
-        <Group justify="space-between">
-          <Text c="dimmed" size="sm">
-            Pending rows: {pagination.total}
-          </Text>
-          <Button disabled={working} onClick={onGenerate}>
+        <Group align="center" justify="space-between" wrap="wrap">
+          <Group gap="sm" wrap="wrap">
+            <Text c="dimmed" size="sm">
+              Rows: {pagination.total} | Pending suggestions: {pendingSuggestionTotal}
+            </Text>
+            <Group aria-label="POS review filter" gap={4} role="group">
+              <Button
+                color={reviewFilter === "all" ? "violet" : "gray"}
+                onClick={() => onReviewFilterChange("all")}
+                size="compact-xs"
+                variant={reviewFilter === "all" ? "filled" : "subtle"}
+              >
+                All
+              </Button>
+              <Button
+                color={reviewFilter === "needs_review" ? "violet" : "gray"}
+                onClick={() => onReviewFilterChange("needs_review")}
+                size="compact-xs"
+                variant={reviewFilter === "needs_review" ? "filled" : "subtle"}
+              >
+                Review
+              </Button>
+            </Group>
+          </Group>
+          <Button disabled={working || !research} leftSection={<TbWand aria-hidden="true" size={16} />} onClick={onGenerate}>
             Generate 5 Suggestions
           </Button>
         </Group>
-        {loading ? (
-          <LoadingBlock message="Loading POS suggestions…" />
-        ) : suggestions.length === 0 ? (
+        {!research ? (
           <Text c="dimmed" size="sm">
-            No pending POS suggestions. Generate a batch after uploading text.
+            Run POS research before generating POS suggestions.
+          </Text>
+        ) : null}
+        {loading ? (
+          <LoadingBlock message="Loading POS rows..." />
+        ) : rows.length === 0 ? (
+          <Text c="dimmed" size="sm">
+            {reviewFilter === "needs_review"
+              ? "No pending POS suggestions to review."
+              : "No POS rows yet. Seed POS rows from translation data or upload POS text."}
           </Text>
         ) : (
           <ScrollArea type="auto">
-            <Table miw={920} highlightOnHover>
+            <Table miw={820} highlightOnHover>
               <Table.Thead>
                 {table.getHeaderGroups().map(headerGroup => (
                   <Table.Tr key={headerGroup.id}>
@@ -198,6 +221,68 @@ export function PosSuggestionsTable({
         )}
         <PaginatedTableFooter pagination={pagination} pageIndex={pageIndex} onPageChange={onPageChange} />
       </Stack>
+
+      <Modal
+        centered
+        onClose={() => setReviewingSuggestion(null)}
+        opened={reviewingSuggestion !== null}
+        scrollAreaComponent={ScrollArea.Autosize}
+        size="lg"
+        title="Review POS Suggestion"
+      >
+        {reviewingSuggestion ? (
+          <Stack gap="md">
+            <Box>
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                Text
+              </Text>
+              <Text size="sm" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {modalText || "No source text"}
+              </Text>
+            </Box>
+            <Box>
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                Tokens
+              </Text>
+              <ScrollArea.Autosize mah={320} type="auto">
+                <Stack gap={8} pt={4}>
+                  {modalTokens.map(token => (
+                    <Group key={`${reviewingSuggestion.id}-${token.index}`} gap="xs" wrap="nowrap">
+                      <Badge color="gray" miw={110} radius="sm" variant="light">
+                        {token.token}
+                      </Badge>
+                      <Select
+                        aria-label={`UPOS tag for ${token.token}`}
+                        data={UPOS_TAGS.map(tag => ({ value: tag, label: tag }))}
+                        onChange={value => onTokenChange(reviewingSuggestion.id, token.index, value)}
+                        size="xs"
+                        value={token.suggested_pos}
+                        w={120}
+                      />
+                      <Text c="dimmed" size="xs">
+                        {formatPercent(token.confidence)}
+                      </Text>
+                    </Group>
+                  ))}
+                </Stack>
+              </ScrollArea.Autosize>
+            </Box>
+            <Group gap="xs">
+              <Badge color={statusColor(reviewingSuggestion.status)} radius="sm" variant="dot">
+                {reviewingSuggestion.status}
+              </Badge>
+              <Badge color="grape" radius="sm" variant="light">
+                {formatPercent(reviewingSuggestion.confidence)}
+              </Badge>
+            </Group>
+            <Text c="dimmed" size="sm">
+              {reviewingSuggestion.rationale || "Review the suggested UPOS tags."}
+            </Text>
+            <Divider />
+            <SuggestionActions suggestion={reviewingSuggestion} working={working} onReview={reviewAndClose} />
+          </Stack>
+        ) : null}
+      </Modal>
     </PaperPanel>
   );
 }

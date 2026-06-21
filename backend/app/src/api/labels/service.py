@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 
 from app.src.api.mappers import (
     ai_suggestion_to_api,
+    source_type_to_api,
     suggestion_status_to_db,
     suggestion_type_to_db,
 )
@@ -17,6 +18,7 @@ from app.src.database.models.research import ResearchType
 from app.src.database.models.suggestion import SuggestionStatus as DbSuggestionStatus
 from app.src.jobs import JobRunner
 from app.src.models import (
+    AnnotationRow as ApiAnnotationRow,
     Label as ApiLabel,
     LabelSource as ApiLabelSource,
     Job as ApiJob,
@@ -197,6 +199,45 @@ class LabelsService:
         suggestions = [ai_suggestion_to_api(suggestion) for suggestion in self.session.exec(statement).all()]
         return suggestions, total
 
+    def list_annotation_rows(
+        self,
+        dataset_id: str,
+        row_type: SuggestionType,
+        limit: int = 10,
+        offset: int = 0,
+        needs_review: bool = False,
+    ) -> tuple[list[ApiAnnotationRow], int]:
+        self._get_dataset(dataset_id)
+        db_label_type = suggestion_type_to_db(row_type)
+        if db_label_type != LabelType.pos:
+            raise ValueError("Only POS annotation rows are supported.")
+
+        rows = self._annotation_rows_for_label_type(dataset_id, db_label_type)
+        pending_by_row_id = self._pending_suggestions_by_row_id(
+            dataset_id,
+            db_label_type,
+            [row.id for row in rows],
+        )
+        if needs_review:
+            rows = [row for row in rows if row.id in pending_by_row_id]
+        total = len(rows)
+        page_rows = rows[offset : offset + limit]
+        return [
+            ApiAnnotationRow(
+                id=row.id,
+                dataset_id=row.dataset_id,
+                data_row_id=row.id,
+                text=row.text_content or "",
+                type=SuggestionType.POS,
+                source_type=source_type_to_api(row.source_type),
+                created_at=row.created_at,
+                pending_suggestion=ai_suggestion_to_api(pending_by_row_id[row.id])
+                if row.id in pending_by_row_id
+                else None,
+            )
+            for row in page_rows
+        ], total
+
     def list_labels(
         self,
         dataset_id: str,
@@ -234,8 +275,9 @@ class LabelsService:
                     item[0].id,
                 ),
             )
-            pending_by_row_id = self._pending_translation_suggestions_by_row_id(
+            pending_by_row_id = self._pending_suggestions_by_row_id(
                 dataset_id,
+                LabelType.translation,
                 [label.data_row_id for label, _ in ordered],
             )
             if needs_review:
@@ -253,9 +295,10 @@ class LabelsService:
         labels = [label_to_api(label) for label in self.session.exec(statement).all()]
         return labels, total
 
-    def _pending_translation_suggestions_by_row_id(
+    def _pending_suggestions_by_row_id(
         self,
         dataset_id: str,
+        label_type: LabelType,
         data_row_ids: list[str],
     ) -> dict[str, AiSuggestion]:
         if not data_row_ids:
@@ -263,7 +306,7 @@ class LabelsService:
         suggestions = self.session.exec(
             select(AiSuggestion)
             .where(AiSuggestion.dataset_id == dataset_id)
-            .where(AiSuggestion.label_type == LabelType.translation)
+            .where(AiSuggestion.label_type == label_type)
             .where(AiSuggestion.status == DbSuggestionStatus.pending)
             .where(AiSuggestion.data_row_id.in_(data_row_ids))
             .order_by(AiSuggestion.created_at, AiSuggestion.id)
@@ -272,6 +315,29 @@ class LabelsService:
         for suggestion in suggestions:
             by_row_id.setdefault(suggestion.data_row_id, suggestion)
         return by_row_id
+
+    def _annotation_rows_for_label_type(self, dataset_id: str, label_type: LabelType) -> list[DataRow]:
+        completed_label_row_ids = {
+            label.data_row_id
+            for label in self.session.exec(
+                select(Label).where(Label.dataset_id == dataset_id).where(Label.type == label_type)
+            ).all()
+        }
+        rows = [
+            row
+            for row in self.session.exec(
+                select(DataRow)
+                .where(DataRow.dataset_id == dataset_id)
+                .where(DataRow.text_content.is_not(None))
+                .order_by(DataRow.created_at, DataRow.row_index, DataRow.id)
+            ).all()
+            if row.id not in completed_label_row_ids and row.text_content
+        ]
+        if label_type == LabelType.pos:
+            seeded_rows = [row for row in rows if self._is_pos_seed_row(row)]
+            if seeded_rows:
+                rows = seeded_rows
+        return rows
 
     def review_suggestion(self, suggestion_id: str, review: SuggestionReview) -> Suggestion:
         suggestion = self.session.get(AiSuggestion, suggestion_id)

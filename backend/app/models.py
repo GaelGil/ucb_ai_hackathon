@@ -207,6 +207,17 @@ class Suggestion(BaseModel):
     reviewed_at: datetime | None = None
 
 
+class AnnotationRow(BaseModel):
+    id: str
+    dataset_id: str
+    data_row_id: str
+    text: str
+    type: SuggestionType
+    source_type: SourceType
+    created_at: datetime
+    pending_suggestion: Suggestion | None = None
+
+
 class SuggestionReview(BaseModel):
     action: SuggestionStatus
     edited_text: str | None = None
@@ -313,6 +324,13 @@ class SuggestionsResponse(BaseModel):
 
 class LabelsResponse(BaseModel):
     labels: list[Label]
+    total: int
+    limit: int
+    offset: int
+
+
+class AnnotationRowsResponse(BaseModel):
+    rows: list[AnnotationRow]
     total: int
     limit: int
     offset: int

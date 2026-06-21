@@ -9,6 +9,7 @@ from app.src.api.labels.service import LabelsService
 from app.src.api.research.service import ResearchService
 from app.src.jobs import JobRunner
 from app.src.models import (
+    AnnotationRowsResponse,
     LabelSource,
     LabelsResponse,
     PosSuggestionRequest,
@@ -146,6 +147,21 @@ def list_labels(
 ) -> LabelsResponse:
     labels, total = service.list_labels(dataset_id, type, source, limit, offset, needs_review=needs_review)
     return LabelsResponse(labels=labels, total=total, limit=limit, offset=offset)
+
+
+@router.get("/datasets/{dataset_id}/annotation-rows", response_model=AnnotationRowsResponse)
+def list_annotation_rows(
+    dataset_id: str,
+    type: SuggestionType,
+    needs_review: bool = Query(default=False),
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    service: LabelsService = Depends(get_labels_service),
+) -> AnnotationRowsResponse:
+    if type != SuggestionType.POS:
+        raise HTTPException(status_code=400, detail="Only POS annotation rows are supported.")
+    rows, total = service.list_annotation_rows(dataset_id, type, limit, offset, needs_review=needs_review)
+    return AnnotationRowsResponse(rows=rows, total=total, limit=limit, offset=offset)
 
 
 @router.patch("/suggestions/{suggestion_id}", response_model=Suggestion)

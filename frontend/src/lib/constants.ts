@@ -1,4 +1,4 @@
-import type { Dataset, ImportKind, Label, Suggestion } from "@/types/domain";
+import type { AnnotationRow, Dataset, ImportKind, Label, Suggestion } from "@/types/domain";
 
 export const PAGE_SIZE = 10;
 
@@ -41,5 +41,6 @@ export const IMPORT_KIND_OPTIONS = [
 ] satisfies { value: ImportKind; label: string }[];
 
 export const EMPTY_DATASETS: Dataset[] = [];
+export const EMPTY_ANNOTATION_ROWS: AnnotationRow[] = [];
 export const EMPTY_SUGGESTIONS: Suggestion[] = [];
 export const EMPTY_LABELS: Label[] = [];

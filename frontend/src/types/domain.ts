@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 export type SourceType = "text" | "csv" | "txt" | "pdf" | "image";
 export type ImportKind = "generic" | "translation" | "pos";
 export type ResearchType = "pos" | "translation";
+export type ReviewFilter = "all" | "needs_review";
 export type TranslationReviewFilter = "all" | "needs_review";
 export type SuggestionType = "pos" | "ocr" | "translation" | "emotion" | "intention" | "text" | "custom";
 export type SuggestionStatus = "pending" | "accepted" | "denied" | "updated" | "approved" | "edited";
@@ -63,6 +64,17 @@ export type Suggestion = {
   rationale: string;
 };
 
+export type AnnotationRow = {
+  id: string;
+  dataset_id: string;
+  data_row_id: string;
+  text: string;
+  type: SuggestionType;
+  source_type: SourceType;
+  created_at: string;
+  pending_suggestion: Suggestion | null;
+};
+
 export type Label = {
   id: string;
   dataset_id: string;
@@ -89,12 +101,16 @@ export type SuggestionsResponse = PaginationMeta & {
   suggestions: Suggestion[];
 };
 
+export type AnnotationRowsResponse = PaginationMeta & {
+  rows: AnnotationRow[];
+};
+
 export type LabelsResponse = PaginationMeta & {
   labels: Label[];
 };
 
 export type WorkspacePagination = {
-  posSuggestions: number;
+  posRows: number;
   ocrSuggestions: number;
   translationLabels: number;
 };

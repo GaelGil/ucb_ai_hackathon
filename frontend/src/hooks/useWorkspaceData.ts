@@ -1,15 +1,17 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
-import { EMPTY_DATASETS, EMPTY_LABELS, EMPTY_SUGGESTIONS, PAGE_SIZE } from "@/lib/constants";
+import { EMPTY_ANNOTATION_ROWS, EMPTY_DATASETS, EMPTY_LABELS, EMPTY_SUGGESTIONS, PAGE_SIZE } from "@/lib/constants";
 import { queryKeys } from "@/lib/queryKeys";
 import type {
+  AnnotationRowsResponse,
   Dashboard,
   Dataset,
   LabelsResponse,
   PaginationMeta,
   ResearchArtifact,
   ResearchType,
+  ReviewFilter,
   SuggestionsResponse,
   TranslationReviewFilter,
   WorkspacePagination,
@@ -37,11 +39,12 @@ export function useWorkspaceData(
   activeTab: WorkspaceTab,
   activeResearchType: ResearchType,
   pagination: WorkspacePagination,
+  posReviewFilter: ReviewFilter,
   translationReviewFilter: TranslationReviewFilter,
 ) {
   const enabled = datasetId.length > 0;
   const researchPanelVisible = activeTab === "pos" || activeTab === "translate";
-  const posOffset = pagination.posSuggestions * PAGE_SIZE;
+  const posOffset = pagination.posRows * PAGE_SIZE;
   const ocrOffset = pagination.ocrSuggestions * PAGE_SIZE;
   const translationLabelOffset = pagination.translationLabels * PAGE_SIZE;
   const dashboardQuery = useQuery({
@@ -49,11 +52,11 @@ export function useWorkspaceData(
     queryFn: ({ signal }) => api<Dashboard>(`/datasets/${datasetId}/dashboard`, { signal }),
     enabled,
   });
-  const posSuggestionsQuery = useQuery({
-    queryKey: queryKeys.suggestions(datasetId, "pos", "pending", PAGE_SIZE, posOffset),
+  const posRowsQuery = useQuery({
+    queryKey: queryKeys.annotationRows(datasetId, "pos", PAGE_SIZE, posOffset, posReviewFilter),
     queryFn: ({ signal }) =>
-      api<SuggestionsResponse>(
-        `/datasets/${datasetId}/suggestions?type=pos&status=pending&limit=${PAGE_SIZE}&offset=${posOffset}`,
+      api<AnnotationRowsResponse>(
+        `/datasets/${datasetId}/annotation-rows?type=pos&limit=${PAGE_SIZE}&offset=${posOffset}&needs_review=${posReviewFilter === "needs_review"}`,
         { signal },
       ),
     enabled: enabled && activeTab === "pos",
@@ -95,7 +98,7 @@ export function useWorkspaceData(
   });
   const queries = [
     dashboardQuery,
-    posSuggestionsQuery,
+    posRowsQuery,
     ocrSuggestionsQuery,
     translationLabelsQuery,
     posResearchQuery,
@@ -104,10 +107,10 @@ export function useWorkspaceData(
 
   return {
     dashboard: dashboardQuery.data ?? null,
-    posSuggestions: posSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    posRows: posRowsQuery.data?.rows ?? EMPTY_ANNOTATION_ROWS,
     ocrSuggestions: ocrSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
     translationLabels: translationLabelsQuery.data?.labels ?? EMPTY_LABELS,
-    posSuggestionsPage: pageMeta(posSuggestionsQuery.data, pagination.posSuggestions),
+    posRowsPage: pageMeta(posRowsQuery.data, pagination.posRows),
     ocrSuggestionsPage: pageMeta(ocrSuggestionsQuery.data, pagination.ocrSuggestions),
     translationLabelsPage: pageMeta(translationLabelsQuery.data, pagination.translationLabels),
     researchByType: {

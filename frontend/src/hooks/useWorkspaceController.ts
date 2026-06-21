@@ -17,6 +17,7 @@ import type {
   ImportKind,
   Job,
   ResearchType,
+  ReviewFilter,
   SourceType,
   Suggestion,
   SuggestionStatus,
@@ -36,17 +37,18 @@ export function useWorkspaceController() {
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("upload");
   const [activeResearchType, setActiveResearchType] = useState<ResearchType>("pos");
-  const [posSuggestionsPage, setPosSuggestionsPage] = useState(0);
+  const [posRowsPage, setPosRowsPage] = useState(0);
+  const [posReviewFilter, setPosReviewFilter] = useState<ReviewFilter>("all");
   const [ocrSuggestionsPage, setOcrSuggestionsPage] = useState(0);
   const [translationLabelsPage, setTranslationLabelsPage] = useState(0);
   const [translationReviewFilter, setTranslationReviewFilter] = useState<TranslationReviewFilter>("all");
   const workspaceData = useWorkspaceData(selectedDatasetId, activeTab, activeResearchType, {
-    posSuggestions: posSuggestionsPage,
+    posRows: posRowsPage,
     ocrSuggestions: ocrSuggestionsPage,
     translationLabels: translationLabelsPage,
-  }, translationReviewFilter);
+  }, posReviewFilter, translationReviewFilter);
   const dashboard = workspaceData.dashboard;
-  const suggestions = workspaceData.posSuggestions;
+  const posRows = workspaceData.posRows;
   const ocrSuggestions = workspaceData.ocrSuggestions;
   const translationLabels = workspaceData.translationLabels;
   const researchByType = workspaceData.researchByType;
@@ -100,7 +102,8 @@ export function useWorkspaceController() {
   }, [datasets, datasetsQuery.isSuccess]);
 
   useEffect(() => {
-    setPosSuggestionsPage(0);
+    setPosRowsPage(0);
+    setPosReviewFilter("all");
     setOcrSuggestionsPage(0);
     setTranslationLabelsPage(0);
     setTranslationReviewFilter("all");
@@ -114,8 +117,12 @@ export function useWorkspaceController() {
   }, [translationReviewFilter]);
 
   useEffect(() => {
-    setPosSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.posSuggestionsPage.total)));
-  }, [workspaceData.posSuggestionsPage.total]);
+    setPosRowsPage(current => Math.min(current, lastPageIndex(workspaceData.posRowsPage.total)));
+  }, [workspaceData.posRowsPage.total]);
+
+  useEffect(() => {
+    setPosRowsPage(0);
+  }, [posReviewFilter]);
 
   useEffect(() => {
     setOcrSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.ocrSuggestionsPage.total)));
@@ -153,6 +160,7 @@ export function useWorkspaceController() {
           await invalidateDashboard(selectedDatasetId);
           await invalidateResearch("pos", selectedDatasetId);
           await invalidateResearch("translation", selectedDatasetId);
+          await invalidatePosRows(selectedDatasetId);
           await invalidateSuggestions("pos", selectedDatasetId);
           await invalidateSuggestions("ocr", selectedDatasetId);
           await invalidateSuggestions("translation", selectedDatasetId);
@@ -185,33 +193,44 @@ export function useWorkspaceController() {
   useEffect(() => {
     setTokenDrafts(previous => {
       const next = { ...previous };
-      for (const suggestion of suggestions) {
-        next[suggestion.id] ??= suggestion.tokens;
+      let changed = false;
+      for (const row of posRows) {
+        const suggestion = row.pending_suggestion;
+        if (suggestion && next[suggestion.id] === undefined) {
+          next[suggestion.id] = suggestion.tokens;
+          changed = true;
+        }
       }
-      return next;
+      return changed ? next : previous;
     });
-  }, [suggestions]);
+  }, [posRows]);
 
   useEffect(() => {
     setOcrDrafts(previous => {
       const next = { ...previous };
+      let changed = false;
       for (const suggestion of ocrSuggestions) {
-        next[suggestion.id] ??= suggestion.suggested_text ?? "";
+        if (next[suggestion.id] === undefined) {
+          next[suggestion.id] = suggestion.suggested_text ?? "";
+          changed = true;
+        }
       }
-      return next;
+      return changed ? next : previous;
     });
   }, [ocrSuggestions]);
 
   useEffect(() => {
     setTranslationDrafts(previous => {
       const next = { ...previous };
+      let changed = false;
       for (const label of translationLabels) {
         const suggestion = label.pending_suggestion;
-        if (suggestion) {
-          next[suggestion.id] ??= suggestion.suggested_text ?? "";
+        if (suggestion && next[suggestion.id] === undefined) {
+          next[suggestion.id] = suggestion.suggested_text ?? "";
+          changed = true;
         }
       }
-      return next;
+      return changed ? next : previous;
     });
   }, [translationLabels]);
 
@@ -230,10 +249,16 @@ export function useWorkspaceController() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.labelsRoot(datasetId, "translation") });
   }
 
+  async function invalidatePosRows(datasetId = selectedDatasetId) {
+    if (!datasetId) return;
+    setPosRowsPage(0);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.annotationRowsRoot(datasetId, "pos") });
+  }
+
   async function invalidateSuggestions(type: SuggestionType, datasetId = selectedDatasetId) {
     if (!datasetId) return;
     if (type === "pos") {
-      setPosSuggestionsPage(0);
+      await invalidatePosRows(datasetId);
     }
     if (type === "ocr") {
       setOcrSuggestionsPage(0);
@@ -528,7 +553,9 @@ export function useWorkspaceController() {
     ocrSuggestions,
     ocrSuggestionsPage,
     openDetail,
-    posSuggestionsPage,
+    posRows,
+    posRowsPage,
+    posReviewFilter,
     researchByType,
     reviewSuggestion,
     runOcr,
@@ -547,7 +574,8 @@ export function useWorkspaceController() {
     setManualText,
     setOcrDrafts,
     setOcrSuggestionsPage,
-    setPosSuggestionsPage,
+    setPosReviewFilter,
+    setPosRowsPage,
     setSelectedOcrImportIds,
     setSelectedDatasetId,
     setSelectedDetail,
@@ -558,7 +586,6 @@ export function useWorkspaceController() {
     setTranslationReviewFilter,
     setUploadFile,
     sidebarCollapsed,
-    suggestions,
     toast,
     tokenDrafts,
     trainPosModel,

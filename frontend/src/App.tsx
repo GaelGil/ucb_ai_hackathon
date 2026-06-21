@@ -107,15 +107,19 @@ export function App() {
 
               <Tabs.Panel value="pos" pt="md">
                 <PosSuggestionsTable
-                  suggestions={workspace.suggestions}
+                  rows={workspace.posRows}
                   tokenDrafts={workspace.tokenDrafts}
-                  pagination={workspace.workspaceData.posSuggestionsPage}
-                  pageIndex={workspace.posSuggestionsPage}
+                  pagination={workspace.workspaceData.posRowsPage}
+                  pageIndex={workspace.posRowsPage}
+                  pendingSuggestionTotal={workspace.dashboard?.suggestion_counts["pos:pending"] ?? 0}
+                  reviewFilter={workspace.posReviewFilter}
+                  research={workspace.researchByType.pos}
                   loading={workspace.workspaceLoading}
                   working={workspace.working}
                   onGenerate={() => void workspace.generatePosSuggestions()}
                   onOpenDetail={workspace.openDetail}
-                  onPageChange={workspace.setPosSuggestionsPage}
+                  onPageChange={workspace.setPosRowsPage}
+                  onReviewFilterChange={workspace.setPosReviewFilter}
                   onReview={(suggestion, action) => void workspace.reviewSuggestion(suggestion, action)}
                   onTokenChange={workspace.updateTokenDraft}
                 />
@@ -147,7 +151,7 @@ export function App() {
                   drafts={workspace.translationDrafts}
                   labelsPagination={workspace.workspaceData.translationLabelsPage}
                   labelsPageIndex={workspace.translationLabelsPage}
-                  pendingSuggestionTotal={workspace.dashboard?.suggestion_counts.translation ?? 0}
+                  pendingSuggestionTotal={workspace.dashboard?.suggestion_counts["translation:pending"] ?? 0}
                   reviewFilter={workspace.translationReviewFilter}
                   research={workspace.researchByType.translation}
                   loading={workspace.workspaceLoading}

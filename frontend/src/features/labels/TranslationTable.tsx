@@ -7,7 +7,6 @@ import {
   Group,
   Modal,
   ScrollArea,
-  SegmentedControl,
   Stack,
   Table,
   Text,
@@ -179,15 +178,24 @@ export function TranslationTable({
             <Text c="dimmed" size="sm">
               Saved labels: {labelsPagination.total} | Pending suggestions: {pendingSuggestionTotal}
             </Text>
-            <SegmentedControl
-              data={[
-                { label: "All", value: "all" },
-                { label: "Review", value: "needs_review" },
-              ]}
-              onChange={value => onReviewFilterChange(value as TranslationReviewFilter)}
-              size="xs"
-              value={reviewFilter}
-            />
+            <Group aria-label="Translation review filter" gap={4} role="group">
+              <Button
+                color={reviewFilter === "all" ? "violet" : "gray"}
+                onClick={() => onReviewFilterChange("all")}
+                size="compact-xs"
+                variant={reviewFilter === "all" ? "filled" : "subtle"}
+              >
+                All
+              </Button>
+              <Button
+                color={reviewFilter === "needs_review" ? "violet" : "gray"}
+                onClick={() => onReviewFilterChange("needs_review")}
+                size="compact-xs"
+                variant={reviewFilter === "needs_review" ? "filled" : "subtle"}
+              >
+                Review
+              </Button>
+            </Group>
           </Group>
           <Button disabled={working || !research} leftSection={<TbWand aria-hidden="true" size={16} />} onClick={onGenerate}>
             Generate 5 Suggestions
