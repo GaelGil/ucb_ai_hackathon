@@ -19,9 +19,9 @@ from app.database.models.language import now_utc
 from app.database.models.suggestion import SuggestionStatus
 from app.jobs import JobRunner
 from app.parsing import parse_text_items
-from app.providers import OCRProvider
+from app.integrations.providers import OCRProvider
 from app.exceptions import NotFoundError
-from app.storage import SupabaseStorage, storage_path_for_upload
+from app.integrations.storage import SupabaseStorage, storage_path_for_upload
 
 
 CSV_IMPORT_BATCH_SIZE = 5

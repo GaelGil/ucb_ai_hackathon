@@ -13,9 +13,9 @@ from app.routes.language.service import LanguageService
 from app.routes.research.service import ResearchService
 from app.config import Settings
 from app.jobs import JobRunner
-from app.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
-from app.storage import SupabaseStorage
-from app.tracing import Tracer
+from app.integrations.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
+from app.integrations.storage import SupabaseStorage
+from app.integrations.tracing import Tracer
 
 SERVICES_CONFIG_KEY = "APP_SERVICES"
 

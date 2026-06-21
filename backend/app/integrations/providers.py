@@ -20,7 +20,7 @@ from app.schemas import (
     UPOS_TAGS,
     UploadedAsset,
 )
-from app.tracing import Tracer
+from app.integrations.tracing import Tracer
 
 
 @dataclass(frozen=True)
