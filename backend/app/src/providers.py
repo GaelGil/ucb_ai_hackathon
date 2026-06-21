@@ -7,7 +7,13 @@ from typing import Any
 import httpx
 
 from app.src.config import Settings, get_settings
-from app.src.models import Dataset, ResearchArtifact, ResearchSource, TokenSuggestion, UploadedAsset
+from app.src.models import (
+    Dataset,
+    ResearchArtifact,
+    ResearchSource,
+    TokenSuggestion,
+    UploadedAsset,
+)
 
 
 class BrowserbaseResearchProvider:
@@ -18,7 +24,7 @@ class BrowserbaseResearchProvider:
         llm: "ConfigurableLLMClient | None" = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.api_key = api_key or self.settings.browserbase_api_key
+        self.api_key = api_key or self.settings.BROWSERBASE_API_KEY
         self.llm = llm or ConfigurableLLMClient(self.settings)
         self.base_url = self.settings.browserbase_base_url
 
@@ -34,14 +40,20 @@ class BrowserbaseResearchProvider:
         sources: list[ResearchSource] = []
         try:
             with httpx.Client(timeout=self.settings.http_timeout_seconds) as client:
-                search_response = client.post(f"{self.base_url}/v1/search", headers=headers, json={"query": query})
+                search_response = client.post(
+                    f"{self.base_url}/v1/search", headers=headers, json={"query": query}
+                )
                 search_response.raise_for_status()
                 results = self._extract_search_results(search_response.json())
                 for result in results[:3]:
                     fetched = client.post(
                         f"{self.base_url}/v1/fetch",
                         headers=headers,
-                        json={"url": result["url"], "format": "markdown", "allowRedirects": True},
+                        json={
+                            "url": result["url"],
+                            "format": "markdown",
+                            "allowRedirects": True,
+                        },
                     )
                     if fetched.status_code < 400:
                         content = fetched.json().get("content", "")
@@ -73,7 +85,12 @@ class BrowserbaseResearchProvider:
         )
 
     def _extract_search_results(self, payload: dict[str, Any]) -> list[dict[str, str]]:
-        candidates = payload.get("results") or payload.get("data") or payload.get("organic") or []
+        candidates = (
+            payload.get("results")
+            or payload.get("data")
+            or payload.get("organic")
+            or []
+        )
         results: list[dict[str, str]] = []
         for item in candidates:
             url = item.get("url") or item.get("link")
@@ -81,8 +98,12 @@ class BrowserbaseResearchProvider:
                 results.append({"url": url, "title": item.get("title", url)})
         return results
 
-    def _fallback_research(self, dataset: Dataset, samples: list[str]) -> ResearchArtifact:
-        sample_preview = "; ".join(samples[:3]) if samples else "No samples uploaded yet."
+    def _fallback_research(
+        self, dataset: Dataset, samples: list[str]
+    ) -> ResearchArtifact:
+        sample_preview = (
+            "; ".join(samples[:3]) if samples else "No samples uploaded yet."
+        )
         return ResearchArtifact(
             dataset_id=dataset.id,
             language_code=dataset.language_code,
@@ -113,7 +134,9 @@ class ConfigurableLLMClient:
         self.api_key = self.settings.llm_api_key
         self.model = self.settings.llm_model
 
-    def summarize_research(self, dataset: Dataset, samples: list[str], sources: list[ResearchSource]) -> str:
+    def summarize_research(
+        self, dataset: Dataset, samples: list[str], sources: list[ResearchSource]
+    ) -> str:
         if not self.base_url or not self.api_key:
             return (
                 f"{dataset.language_name} research notes synthesized from {len(sources)} source(s). "
@@ -135,7 +158,10 @@ class ConfigurableLLMClient:
                     json={
                         "model": self.model,
                         "messages": [
-                            {"role": "system", "content": "Return concise annotation research notes."},
+                            {
+                                "role": "system",
+                                "content": "Return concise annotation research notes.",
+                            },
                             {"role": "user", "content": json.dumps(prompt)},
                         ],
                     },
@@ -152,7 +178,9 @@ class ConfigurableLLMClient:
 class PosAnnotationProvider:
     _punct = re.compile(r"^\W+$", re.UNICODE)
 
-    def suggest(self, text: str, research: ResearchArtifact | None = None) -> list[TokenSuggestion]:
+    def suggest(
+        self, text: str, research: ResearchArtifact | None = None
+    ) -> list[TokenSuggestion]:
         tokens = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
         suggestions: list[TokenSuggestion] = []
         for index, token in enumerate(tokens):
@@ -178,7 +206,19 @@ class PosAnnotationProvider:
             return "NUM", 0.98, "Numeric tokens are tagged as NUM."
         if lower in {"el", "la", "los", "las", "un", "una", "the", "a", "an"}:
             return "DET", 0.86, "Article/determiner form."
-        if lower in {"de", "del", "en", "con", "para", "por", "to", "from", "of", "in", "on"}:
+        if lower in {
+            "de",
+            "del",
+            "en",
+            "con",
+            "para",
+            "por",
+            "to",
+            "from",
+            "of",
+            "in",
+            "on",
+        }:
             return "ADP", 0.84, "Adposition-like function word."
         if lower in {"y", "o", "and", "or"}:
             return "CCONJ", 0.9, "Coordinating conjunction."
@@ -186,8 +226,18 @@ class PosAnnotationProvider:
             return "SCONJ", 0.78, "Subordinating connector candidate."
         if lower in {"yo", "tu", "mi", "su", "he", "she", "they", "we", "i"}:
             return "PRON", 0.82, "Pronoun or possessive pronoun candidate."
-        if lower.endswith(("ar", "er", "ir", "ing", "ed")) or lower in {"es", "son", "esta", "corre", "habla"}:
-            return "VERB", 0.72, "Verb-like form from suffix or common copula/action cue."
+        if lower.endswith(("ar", "er", "ir", "ing", "ed")) or lower in {
+            "es",
+            "son",
+            "esta",
+            "corre",
+            "habla",
+        }:
+            return (
+                "VERB",
+                0.72,
+                "Verb-like form from suffix or common copula/action cue.",
+            )
         if token[:1].isupper() and index > 0:
             return "PROPN", 0.7, "Capitalized non-initial token."
         if lower.endswith(("o", "a", "os", "as", "able", "ible")):
@@ -225,14 +275,22 @@ class TranslationProvider:
         self.endpoint_url = self.settings.nahuatl_model_endpoint_url
         self.model = self.settings.nahuatl_model_name
 
-    def translate(self, text: str, direction: str = "spanish_to_nahuatl") -> tuple[str, str, str]:
+    def translate(
+        self, text: str, direction: str = "spanish_to_nahuatl"
+    ) -> tuple[str, str, str]:
         if self.endpoint_url:
             try:
                 with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
-                    response = client.post(self.endpoint_url, json={"text": text, "direction": direction})
+                    response = client.post(
+                        self.endpoint_url, json={"text": text, "direction": direction}
+                    )
                     response.raise_for_status()
                     payload = response.json()
-                    return str(payload.get("translation") or payload.get("output_text")), "aws-neuron-endpoint", self.model
+                    return (
+                        str(payload.get("translation") or payload.get("output_text")),
+                        "aws-neuron-endpoint",
+                        self.model,
+                    )
             except Exception:
                 pass
 
@@ -241,4 +299,8 @@ class TranslationProvider:
             "el agua corre rapido": "atl motlaloa iciuhca",
             "mi familia habla nahuatl": "nochanehua tlahtoa nahuatlahtolli",
         }
-        return demo_phrases.get(text.lower(), f"[Nahuatl demo translation] {text}"), "local-demo", self.model
+        return (
+            demo_phrases.get(text.lower(), f"[Nahuatl demo translation] {text}"),
+            "local-demo",
+            self.model,
+        )
