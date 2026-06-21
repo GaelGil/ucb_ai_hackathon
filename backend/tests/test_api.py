@@ -93,6 +93,7 @@ def test_csv_import_can_create_labels(client: TestClient) -> None:
 
     translations = client.get(f"/datasets/{dataset['id']}/labels", params={"type": "translation"}).json()["labels"]
     assert [label["value"]["text"] for label in translations] == ["tlasohkamati", "ome"]
+    assert [label["data_text"] for label in translations] == ["hello world", "second row"]
 
 
 def test_delete_dataset_removes_workspace_state(client: TestClient) -> None:

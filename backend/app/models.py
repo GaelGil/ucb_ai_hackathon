@@ -137,6 +137,7 @@ class Label(BaseModel):
     id: str = Field(default_factory=lambda: new_id("label"))
     dataset_id: str
     data_row_id: str
+    data_text: str | None = None
     import_id: str | None = None
     ai_suggestion_id: str | None = None
     type: SuggestionType

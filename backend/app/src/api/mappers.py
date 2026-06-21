@@ -94,10 +94,12 @@ def data_row_to_text_item(row: DataRow) -> api.TextItem:
 
 
 def label_to_api(label: Label) -> api.Label:
+    data_row = getattr(label, "data_row", None)
     return api.Label(
         id=label.id,
         dataset_id=label.dataset_id,
         data_row_id=label.data_row_id,
+        data_text=data_row.text_content if data_row is not None else None,
         import_id=label.import_id,
         ai_suggestion_id=label.ai_suggestion_id,
         type=suggestion_type_to_api(label.type),
