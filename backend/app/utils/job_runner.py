@@ -9,7 +9,7 @@ from app.database.models.job import Job as DbJob
 from app.database.models.job import JobStatus as DbJobStatus
 from app.database.models.language import now_utc
 from app.schemas import Job
-from app.integrations.tracing import Tracer
+from app.clients.tracing import Tracer
 
 
 class JobRunner:

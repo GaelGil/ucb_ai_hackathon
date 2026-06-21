@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.schemas import TranslationProviderResult
-from app.integrations.providers import TranslationProvider
-from app.integrations.tracing import Tracer
+from app.clients.ai import TranslationProvider
+from app.clients.tracing import Tracer
 
 
 class LanguageService:

@@ -1,5 +1,5 @@
 from app.config import Settings
-from app.integrations.tracing import Tracer
+from app.clients.tracing import Tracer
 
 
 def test_arize_enabled_without_credentials_disables_tracing(capsys) -> None:

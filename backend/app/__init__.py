@@ -18,10 +18,10 @@ from app.routes.language.routes import bp as language_bp
 from app.routes.research.routes import bp as research_bp
 from app.config import Settings, get_settings
 from app.database.session import create_database_engine, engine as default_engine
-from app.integrations.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
+from app.clients.ai import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
 from app.exceptions import NotFoundError
-from app.integrations.storage import SupabaseStorage
-from app.integrations.tracing import Tracer
+from app.clients.storage import SupabaseStorage
+from app.clients.tracing import Tracer
 
 
 def create_app(

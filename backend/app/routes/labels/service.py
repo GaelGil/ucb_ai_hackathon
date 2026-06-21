@@ -28,7 +28,7 @@ from app.schemas import (
     SuggestionStatus,
     SuggestionType,
 )
-from app.integrations.providers import PosAnnotationProvider, TranslationProvider
+from app.clients.ai import PosAnnotationProvider, TranslationProvider
 from app.exceptions import NotFoundError
 
 
