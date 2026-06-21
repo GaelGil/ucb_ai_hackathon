@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Generator
 from dataclasses import dataclass
 
-from fastapi import Depends, Request
+from flask import current_app, g
 from sqlalchemy import Engine
 from sqlmodel import Session
 
@@ -18,6 +17,8 @@ from app.src.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnot
 from app.src.storage import SupabaseStorage
 from app.src.tracing import Tracer
 
+SERVICES_CONFIG_KEY = "APP_SERVICES"
+
 
 @dataclass(frozen=True)
 class AppServices:
@@ -31,17 +32,31 @@ class AppServices:
     storage: SupabaseStorage
 
 
-def get_services(request: Request) -> AppServices:
-    return request.app.state.services
+def get_services() -> AppServices:
+    return current_app.config[SERVICES_CONFIG_KEY]
 
 
-def get_db_session(request: Request) -> Generator[Session, None, None]:
-    with Session(get_services(request).engine) as session:
-        yield session
+def get_db_session() -> Session:
+    """Return the request-scoped database session, creating it on first use.
+
+    One session is shared across all service factories within a single request
+    (mirroring FastAPI's per-request dependency caching) and closed in the
+    app-context teardown registered by ``create_app``.
+    """
+    if "db_session" not in g:
+        g.db_session = Session(get_services().engine)
+    return g.db_session
 
 
-def get_data_service(request: Request, session: Session = Depends(get_db_session)) -> DataService:
-    services = get_services(request)
+def close_db_session(exc: BaseException | None = None) -> None:
+    session = g.pop("db_session", None)
+    if session is not None:
+        session.close()
+
+
+def get_data_service() -> DataService:
+    services = get_services()
+    session = get_db_session()
     return DataService(
         session=session,
         ocr_provider=services.ocr_provider,
@@ -50,12 +65,13 @@ def get_data_service(request: Request, session: Session = Depends(get_db_session
     )
 
 
-def get_dataset_service(session: Session = Depends(get_db_session)) -> DatasetService:
-    return DatasetService(session=session)
+def get_dataset_service() -> DatasetService:
+    return DatasetService(session=get_db_session())
 
 
-def get_labels_service(request: Request, session: Session = Depends(get_db_session)) -> LabelsService:
-    services = get_services(request)
+def get_labels_service() -> LabelsService:
+    services = get_services()
+    session = get_db_session()
     jobs = JobRunner(session, services.tracer)
     research = ResearchService(
         session=session,
@@ -72,13 +88,14 @@ def get_labels_service(request: Request, session: Session = Depends(get_db_sessi
     )
 
 
-def get_language_service(request: Request) -> LanguageService:
-    services = get_services(request)
+def get_language_service() -> LanguageService:
+    services = get_services()
     return LanguageService(translation_provider=services.translation_provider, tracer=services.tracer)
 
 
-def get_research_service(request: Request, session: Session = Depends(get_db_session)) -> ResearchService:
-    services = get_services(request)
+def get_research_service() -> ResearchService:
+    services = get_services()
+    session = get_db_session()
     return ResearchService(
         session=session,
         research_provider=services.research_provider,

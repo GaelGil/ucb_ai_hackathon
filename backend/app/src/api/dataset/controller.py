@@ -1,35 +1,37 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from flask import Blueprint, request
 
 from app.src.api.dependencies import get_dataset_service
-from app.src.api.dataset.service import DatasetService
-from app.src.models import Dashboard, Dataset, DatasetCreate, JobResponse
+from app.src.api.responses import json_response
+from app.src.models import DatasetCreate, JobResponse
 
 
-router = APIRouter()
+bp = Blueprint("dataset", __name__)
 
 
-@router.post("/datasets", response_model=Dataset)
-def create_dataset(payload: DatasetCreate, service: DatasetService = Depends(get_dataset_service)) -> Dataset:
-    return service.create_dataset(payload)
+@bp.post("/datasets")
+def create_dataset():
+    payload = DatasetCreate.model_validate(request.get_json(silent=True) or {})
+    return json_response(get_dataset_service().create_dataset(payload))
 
 
-@router.get("/datasets", response_model=list[Dataset])
-def list_datasets(service: DatasetService = Depends(get_dataset_service)) -> list[Dataset]:
-    return service.list_datasets()
+@bp.get("/datasets")
+def list_datasets():
+    return json_response(get_dataset_service().list_datasets())
 
 
-@router.delete("/datasets/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_dataset(dataset_id: str, service: DatasetService = Depends(get_dataset_service)) -> None:
-    service.delete_dataset(dataset_id)
+@bp.delete("/datasets/<dataset_id>")
+def delete_dataset(dataset_id: str):
+    get_dataset_service().delete_dataset(dataset_id)
+    return "", 204
 
 
-@router.get("/datasets/{dataset_id}/dashboard", response_model=Dashboard)
-def get_dashboard(dataset_id: str, service: DatasetService = Depends(get_dataset_service)) -> Dashboard:
-    return service.get_dashboard(dataset_id)
+@bp.get("/datasets/<dataset_id>/dashboard")
+def get_dashboard(dataset_id: str):
+    return json_response(get_dataset_service().get_dashboard(dataset_id))
 
 
-@router.get("/jobs/{job_id}", response_model=JobResponse)
-def get_job(job_id: str, service: DatasetService = Depends(get_dataset_service)) -> JobResponse:
-    return JobResponse(job=service.get_job(job_id))
+@bp.get("/jobs/<job_id>")
+def get_job(job_id: str):
+    return json_response(JobResponse(job=get_dataset_service().get_job(job_id)))

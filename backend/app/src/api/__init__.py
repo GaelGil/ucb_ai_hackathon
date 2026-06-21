@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from flask import Flask, jsonify
+from flask_cors import CORS
+from pydantic import ValidationError
 from sqlalchemy import Engine
 from sqlmodel import SQLModel, Session
+from werkzeug.exceptions import HTTPException
 
 import app.src.database.models  # noqa: F401  (registers SQLModel tables)
-from app.src.api.data.controller import router as data_router
-from app.src.api.dataset.controller import router as dataset_router
+from app.src.api.data.controller import bp as data_bp
+from app.src.api.dataset.controller import bp as dataset_bp
 from app.src.api.dataset.service import DatasetService
-from app.src.api.dependencies import AppServices
-from app.src.api.labels.controller import router as labels_router
-from app.src.api.language.controller import router as language_router
-from app.src.api.research.controller import router as research_router
+from app.src.api.dependencies import AppServices, SERVICES_CONFIG_KEY, close_db_session
+from app.src.api.labels.controller import bp as labels_bp
+from app.src.api.language.controller import bp as language_bp
+from app.src.api.research.controller import bp as research_bp
 from app.src.config import Settings, get_settings
 from app.src.database.session import create_database_engine
 from app.src.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
@@ -27,7 +28,7 @@ def create_app(
     settings: Settings | None = None,
     engine: Engine | None = None,
     create_tables: bool | None = None,
-) -> FastAPI:
+) -> Flask:
     del repository
     settings = settings or get_settings()
     engine = engine or create_database_engine(settings)
@@ -51,27 +52,43 @@ def create_app(
         with Session(engine) as session:
             DatasetService(session=session).seed_demo_dataset()
 
-    app = FastAPI(title=settings.app_name, version=settings.app_version)
-    app.state.services = services
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
+    app = Flask(__name__)
+    app.config["APP_NAME"] = settings.app_name
+    app.config["APP_VERSION"] = settings.app_version
+    app.config[SERVICES_CONFIG_KEY] = services
+    app.teardown_appcontext(close_db_session)
+
+    CORS(
+        app,
+        origins=settings.cors_origins,
+        supports_credentials=True,
+        methods=["*"],
         allow_headers=["*"],
     )
 
-    @app.exception_handler(NotFoundError)
-    async def not_found_handler(_, exc: NotFoundError):
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    @app.errorhandler(NotFoundError)
+    def not_found_handler(exc: NotFoundError):
+        return jsonify(detail=str(exc)), 404
+
+    @app.errorhandler(ValidationError)
+    def validation_error_handler(exc: ValidationError):
+        return jsonify(detail=exc.errors(include_url=False)), 422
+
+    @app.errorhandler(HTTPException)
+    def http_exception_handler(exc: HTTPException):
+        # Render framework errors (404/405/...) as JSON. Aborts that already
+        # carry a JSON response (see responses.json_abort) pass through untouched.
+        if exc.response is not None:
+            return exc.response
+        return jsonify(detail=exc.description), exc.code
 
     @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health():
+        return jsonify(status="ok")
 
-    app.include_router(dataset_router)
-    app.include_router(data_router)
-    app.include_router(research_router)
-    app.include_router(labels_router)
-    app.include_router(language_router)
+    app.register_blueprint(dataset_bp)
+    app.register_blueprint(data_bp)
+    app.register_blueprint(research_bp)
+    app.register_blueprint(labels_bp)
+    app.register_blueprint(language_bp)
     return app

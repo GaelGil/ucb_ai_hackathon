@@ -1,10 +1,10 @@
 # LangBase Backend
 
-FastAPI backend for a low-resource language dataset preservation MVP. It supports dataset workspaces, uploads, cached research, UPOS suggestions, OCR suggestions, review actions, a POS model training trigger, and a Spanish-to-Nahuatl translation demo adapter.
+Flask backend for a low-resource language dataset preservation MVP. It supports dataset workspaces, uploads, cached research, UPOS suggestions, OCR suggestions, review actions, a POS model training trigger, and a Spanish-to-Nahuatl translation demo adapter.
 
 ## Structure
 
-Application code lives under `app/src`. API domains own their FastAPI controllers and business services; database support lives beside them under the same source root.
+Application code lives under `app/src`. API domains own their Flask blueprints (controllers) and business services; database support lives beside them under the same source root.
 
 ```text
 app/
@@ -32,7 +32,13 @@ The public API is backed by SQLModel tables and is intended to run against Supab
 ## Run
 
 ```bash
-uv run uvicorn main:app --reload
+uv run python main.py
+```
+
+Or with the Flask CLI:
+
+```bash
+uv run flask --app main:app run --debug --port 8000
 ```
 
 The API runs on `http://127.0.0.1:8000` by default.
