@@ -1,0 +1,2 @@
+"""Language adapter API domain."""
+

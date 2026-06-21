@@ -1,62 +1,98 @@
-# Backend — Database Layer
+# LangBase Backend
 
-SQLModel + Alembic + Pydantic Settings against Supabase Postgres.
+FastAPI backend for a low-resource language dataset preservation MVP. It supports dataset workspaces, uploads, cached research, UPOS suggestions, OCR suggestions, review actions, a POS model training trigger, and a Spanish-to-Nahuatl translation demo adapter.
 
 ## Structure
 
-```
+Application code lives under `app/src`. API domains own their FastAPI controllers and business services; database support lives beside them under the same source root.
+
+```text
 app/
-├── core/
-│   ├── config.py          # Pydantic Settings (loads .env -> DATABASE_URL)
-│   └── database.py         # SQLAlchemy engine + get_session()
-├── database/
-│   ├── models/             # SQLModel tables: Language, Data, Label
-│   ├── schemas/            # Pydantic request/response models
-│   └── repositories/       # Data-access layer (one class per table)
-└── api/
-    └── language/           # controller.py + service.py (example resource)
-migrations/                 # Alembic (env.py wired to Settings + SQLModel.metadata)
-└── versions/               # Migration files
+  api.py                  # compatibility wrapper for app.src.api:create_app
+  src/
+    api/
+      data/
+      dataset/
+      labels/
+      language/
+      research/
+    database/
+      models/
+      repositories/
+      schemas/
+      session.py
+    config.py
+    providers.py
+    tracing.py
+migrations/               # Alembic migration environment and versions
 ```
 
-### Data model
-- **Language** (id, name) → has many **Data**
-- **Data** (id, name, type ∈ {text, image, audio}) → belongs to Language, has many **Labels**
-- **Label** (id, name, type, value) → belongs to Data
+The public API is backed by SQLModel tables and is intended to run against Supabase Postgres. Tests use in-memory SQLite only for fast isolated verification.
 
-## Setup
+## Run
 
-1. Copy the env template and fill in your Supabase connection string:
-   ```bash
-   cp .env.example .env
-   ```
-   In Supabase: **Project Settings → Database → Connection string → URI**.
-   Use the direct/session connection (port `5432`), change the scheme to
-   `postgresql+psycopg2://`, and append `?sslmode=require`:
-   ```
-   DATABASE_URL=postgresql+psycopg2://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
-   ```
+```bash
+uv run uvicorn main:app --reload
+```
 
-2. Install dependencies (already done if `uv.lock` exists):
-   ```bash
-   uv sync
-   ```
+The API runs on `http://127.0.0.1:8000` by default.
+
+## Test
+
+```bash
+uv run pytest
+uv run python -m compileall app main.py
+```
+
+## Environment
+
+Copy `.env.example` to `.env` or `.env.local` and set `DATABASE_URL` before starting the API. Supabase Storage credentials are required when uploading PDFs/images to cloud storage; without them tests can still exercise the metadata path.
+
+pydantic-settings loads `backend/.env` and then `backend/.env.local`; real environment variables override both.
+
+Common variables:
+
+```bash
+DATABASE_URL=postgresql+psycopg2://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+DB_ECHO=false
+SUPABASE_URL=https://<ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_STORAGE_BUCKET=langbase-uploads
+BROWSERBASE_API_KEY=...
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=...
+LLM_MODEL=gpt-4.1-mini
+PHOENIX_ENABLED=true
+PHOENIX_OTEL_ENDPOINT=http://localhost:6006/v1/traces
+NAHUATL_MODEL_ENDPOINT_URL=https://your-neuron-endpoint/invoke
+NAHUATL_MODEL_NAME=somosnlp-hackathon-2022/t5-small-spanish-nahuatl
+```
+
+Use a SQLAlchemy/psycopg2 URL from Supabase, for example:
+
+```bash
+DATABASE_URL=postgresql+psycopg2://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+```
 
 ## Migrations
 
-Generate a new migration after changing models in `app/database/models/`:
+Generate a new migration after changing models in `app/src/database/models/`:
+
 ```bash
 uv run alembic revision --autogenerate -m "describe your change"
 ```
 
-Apply migrations to the database:
+Apply migrations:
+
 ```bash
 uv run alembic upgrade head
 ```
 
-Other useful commands:
+Useful commands:
+
 ```bash
-uv run alembic current        # show current revision
-uv run alembic history        # list migrations
-uv run alembic downgrade -1   # roll back one migration
+uv run alembic heads
+uv run alembic current
+uv run alembic history
+uv run alembic downgrade -1
 ```
