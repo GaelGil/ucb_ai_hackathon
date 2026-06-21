@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, request
 
-from app.api.dependencies import get_language_service
+from app.api.context import get_language_service
 from app.api.responses import json_response
 from app.schemas import TranslationRequest, TranslationResponse
 

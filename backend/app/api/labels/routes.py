@@ -5,7 +5,7 @@ import threading
 from flask import Blueprint, request
 from sqlmodel import Session
 
-from app.api.dependencies import AppServices, get_labels_service, get_services
+from app.api.context import AppServices, get_labels_service, get_services
 from app.api.labels.service import LabelsService
 from app.api.research.service import ResearchService
 from app.api.responses import json_abort, json_response

@@ -11,7 +11,7 @@ import app.database.models  # noqa: F401  (registers SQLModel tables)
 from app.api.data.routes import bp as data_bp
 from app.api.dataset.routes import bp as dataset_bp
 from app.api.dataset.service import DatasetService
-from app.api.dependencies import AppServices, SERVICES_CONFIG_KEY, close_db_session
+from app.api.context import AppServices, SERVICES_CONFIG_KEY, close_db_session
 from app.api.labels.routes import bp as labels_bp
 from app.api.language.routes import bp as language_bp
 from app.api.research.routes import bp as research_bp

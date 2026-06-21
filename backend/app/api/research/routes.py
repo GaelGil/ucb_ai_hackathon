@@ -5,7 +5,7 @@ import threading
 from flask import Blueprint, request
 from sqlmodel import Session
 
-from app.api.dependencies import AppServices, get_research_service, get_services
+from app.api.context import AppServices, get_research_service, get_services
 from app.api.responses import json_abort, json_response
 from app.api.research.service import ResearchService
 from app.database.models.research import ResearchType

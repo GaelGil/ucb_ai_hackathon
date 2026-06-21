@@ -5,7 +5,7 @@ import threading
 
 from flask import Blueprint, request
 
-from app.api.dependencies import get_data_service, get_services
+from app.api.context import get_data_service, get_services
 from app.api.responses import json_response
 from app.api.data.service import DataService
 from app.jobs import JobRunner
