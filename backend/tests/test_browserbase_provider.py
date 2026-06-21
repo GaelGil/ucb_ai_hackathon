@@ -5,7 +5,8 @@ import httpx
 
 from app.config import Settings
 from app.schemas import Dataset
-from app.clients.ai import BrowserbaseResearchProvider, JsonCompletion
+from app.clients.browserbase import BrowserbaseResearchProvider
+from app.clients.anthropic import JsonCompletion
 from app.clients.tracing import Tracer
 
 
@@ -96,7 +97,7 @@ def test_browserbase_fetch_402_falls_back_to_search_results(monkeypatch) -> None
         },
         fetch_status=402,
     )
-    monkeypatch.setattr("app.clients.ai.httpx.Client", fake_client)
+    monkeypatch.setattr("app.clients.browserbase.httpx.Client", fake_client)
     fake_llm = FakeLLM()
     provider = provider_with(fake_llm)
 
@@ -120,7 +121,7 @@ def test_browserbase_fetch_402_falls_back_to_search_results(monkeypatch) -> None
 
 def test_browserbase_empty_search_still_fails_without_calling_llm(monkeypatch) -> None:
     fake_client, _ = make_fake_http_client(search_payload={"results": []})
-    monkeypatch.setattr("app.clients.ai.httpx.Client", fake_client)
+    monkeypatch.setattr("app.clients.browserbase.httpx.Client", fake_client)
     fake_llm = FakeLLM()
     provider = provider_with(fake_llm)
 

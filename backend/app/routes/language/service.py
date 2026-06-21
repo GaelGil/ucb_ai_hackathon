@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.schemas import TranslationProviderResult
-from app.clients.ai import TranslationProvider
+from app.clients.translation import TranslationProvider
 from app.clients.tracing import Tracer
 
 

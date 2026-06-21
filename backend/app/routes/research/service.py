@@ -7,7 +7,7 @@ from app.database.models import DataRow, Dataset, Research
 from app.database.models.research import ResearchType
 from app.utils.job_runner import JobRunner
 from app.schemas import Job, ResearchArtifact
-from app.clients.ai import BrowserbaseResearchProvider
+from app.clients.browserbase import BrowserbaseResearchProvider
 from app.exceptions import NotFoundError
 from app.clients.tracing import Tracer
 

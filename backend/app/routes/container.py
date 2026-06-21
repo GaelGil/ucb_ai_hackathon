@@ -13,7 +13,10 @@ from app.routes.language.service import LanguageService
 from app.routes.research.service import ResearchService
 from app.config import Settings
 from app.utils.job_runner import JobRunner
-from app.clients.ai import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
+from app.clients.browserbase import BrowserbaseResearchProvider
+from app.clients.image_reader import OCRProvider
+from app.clients.part_of_speech import PosAnnotationProvider
+from app.clients.translation import TranslationProvider
 from app.clients.storage import SupabaseStorage
 from app.clients.tracing import Tracer
 
