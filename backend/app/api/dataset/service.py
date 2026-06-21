@@ -13,7 +13,7 @@ from app.database.models.research import ResearchType
 from app.schemas import Dashboard, DatasetCreate, Job as ApiJob
 from app.schemas import Dataset as ApiDataset
 from app.schemas import PosModelState, PosModelStatus
-from app.repositories import NotFoundError
+from app.exceptions import NotFoundError
 
 
 class DatasetService:

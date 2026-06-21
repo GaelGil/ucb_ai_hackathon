@@ -29,7 +29,7 @@ from app.schemas import (
     SuggestionType,
 )
 from app.providers import PosAnnotationProvider, TranslationProvider
-from app.repositories import NotFoundError
+from app.exceptions import NotFoundError
 
 
 class LabelsService:

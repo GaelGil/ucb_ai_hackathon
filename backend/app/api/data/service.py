@@ -20,7 +20,7 @@ from app.database.models.suggestion import SuggestionStatus
 from app.jobs import JobRunner
 from app.parsing import parse_text_items
 from app.providers import OCRProvider
-from app.repositories import NotFoundError
+from app.exceptions import NotFoundError
 from app.storage import SupabaseStorage, storage_path_for_upload
 
 

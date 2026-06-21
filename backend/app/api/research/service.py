@@ -8,7 +8,7 @@ from app.database.models.research import ResearchType
 from app.jobs import JobRunner
 from app.schemas import Job, ResearchArtifact
 from app.providers import BrowserbaseResearchProvider
-from app.repositories import NotFoundError
+from app.exceptions import NotFoundError
 from app.tracing import Tracer
 
 

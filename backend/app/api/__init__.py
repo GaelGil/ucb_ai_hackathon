@@ -18,7 +18,7 @@ from app.api.research.controller import bp as research_bp
 from app.config import Settings, get_settings
 from app.database.session import create_database_engine, engine as default_engine, get_db
 from app.providers import BrowserbaseResearchProvider, OCRProvider, PosAnnotationProvider, TranslationProvider
-from app.repositories import NotFoundError
+from app.exceptions import NotFoundError
 from app.storage import SupabaseStorage
 from app.tracing import Tracer
 
