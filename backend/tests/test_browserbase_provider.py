@@ -4,7 +4,7 @@ import pytest
 import httpx
 
 from app.config import Settings
-from app.models import Dataset
+from app.schemas import Dataset
 from app.providers import BrowserbaseResearchProvider, JsonCompletion
 from app.tracing import Tracer
 

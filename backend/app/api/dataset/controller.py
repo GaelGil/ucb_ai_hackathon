@@ -4,7 +4,7 @@ from flask import Blueprint, request
 
 from app.api.dependencies import get_dataset_service
 from app.api.responses import json_response
-from app.models import DatasetCreate, JobResponse
+from app.schemas import DatasetCreate, JobResponse
 
 
 bp = Blueprint("dataset", __name__)

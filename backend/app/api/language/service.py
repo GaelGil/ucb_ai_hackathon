@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models import TranslationProviderResult
+from app.schemas import TranslationProviderResult
 from app.providers import TranslationProvider
 from app.tracing import Tracer
 

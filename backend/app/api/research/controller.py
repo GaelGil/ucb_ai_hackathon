@@ -10,7 +10,7 @@ from app.api.responses import json_abort, json_response
 from app.api.research.service import ResearchService
 from app.database.models.research import ResearchType
 from app.jobs import JobRunner
-from app.models import ResearchArtifact, ResearchResponse
+from app.schemas import ResearchArtifact, ResearchResponse
 
 
 bp = Blueprint("research", __name__)

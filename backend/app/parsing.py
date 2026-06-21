@@ -4,7 +4,7 @@ import csv
 from io import StringIO
 from pathlib import Path
 
-from app.models import SourceType
+from app.schemas import SourceType
 
 
 def source_type_from_filename(filename: str | None, fallback: SourceType = SourceType.TEXT) -> SourceType:

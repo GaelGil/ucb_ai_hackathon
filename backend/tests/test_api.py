@@ -8,7 +8,7 @@ from sqlmodel.pool import StaticPool
 from app.api import create_app
 from app.api.dependencies import SERVICES_CONFIG_KEY
 from app.config import Settings
-from app.models import ResearchArtifact, ResearchSource, TokenSuggestion, TranslationProviderResult
+from app.schemas import ResearchArtifact, ResearchSource, TokenSuggestion, TranslationProviderResult
 
 
 class FakeResearchProvider:

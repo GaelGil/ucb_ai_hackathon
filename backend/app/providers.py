@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings, get_settings
-from app.models import (
+from app.schemas import (
     Dataset,
     ProviderWarning,
     ResearchArtifact,

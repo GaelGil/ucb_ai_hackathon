@@ -4,7 +4,7 @@ from flask import Blueprint, request
 
 from app.api.dependencies import get_language_service
 from app.api.responses import json_response
-from app.models import TranslationRequest, TranslationResponse
+from app.schemas import TranslationRequest, TranslationResponse
 
 
 bp = Blueprint("language", __name__)

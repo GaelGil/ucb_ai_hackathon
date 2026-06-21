@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app import models as api
+from app import schemas as api
 from app.database.models import (
     AiSuggestion,
     DataRow,

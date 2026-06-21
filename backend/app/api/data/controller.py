@@ -10,7 +10,7 @@ from app.api.responses import json_response
 from app.api.data.service import DataService
 from app.jobs import JobRunner
 from sqlmodel import Session
-from app.models import ImportKind, ImportResponse, OcrRequest, SourceType
+from app.schemas import ImportKind, ImportResponse, OcrRequest, SourceType
 from app.parsing import source_type_from_filename
 
 

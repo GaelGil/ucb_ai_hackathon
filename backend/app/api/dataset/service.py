@@ -10,9 +10,9 @@ from app.database.models.data import DataSourceType
 from app.database.models.job import JobStatus as DbJobStatus
 from app.database.models.label import LabelSource, LabelType
 from app.database.models.research import ResearchType
-from app.models import Dashboard, DatasetCreate, Job as ApiJob
-from app.models import Dataset as ApiDataset
-from app.models import PosModelState, PosModelStatus
+from app.schemas import Dashboard, DatasetCreate, Job as ApiJob
+from app.schemas import Dataset as ApiDataset
+from app.schemas import PosModelState, PosModelStatus
 from app.repositories import NotFoundError
 
 

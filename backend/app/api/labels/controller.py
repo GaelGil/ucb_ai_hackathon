@@ -10,7 +10,7 @@ from app.api.labels.service import LabelsService
 from app.api.research.service import ResearchService
 from app.api.responses import json_abort, json_response
 from app.jobs import JobRunner
-from app.models import (
+from app.schemas import (
     LabelSource,
     LabelsResponse,
     PosSuggestionRequest,

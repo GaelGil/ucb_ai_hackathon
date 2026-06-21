@@ -6,7 +6,7 @@ from app.api.mappers import dataset_to_api, research_to_api
 from app.database.models import DataRow, Dataset, Research
 from app.database.models.research import ResearchType
 from app.jobs import JobRunner
-from app.models import Job, ResearchArtifact
+from app.schemas import Job, ResearchArtifact
 from app.providers import BrowserbaseResearchProvider
 from app.repositories import NotFoundError
 from app.tracing import Tracer
