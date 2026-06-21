@@ -78,6 +78,7 @@ const SIDEBAR_WIDTH = 304;
 const SIDEBAR_COLLAPSED_WIDTH = 84;
 
 type SourceType = "text" | "csv" | "txt" | "pdf" | "image";
+type ImportKind = "generic" | "translation" | "pos";
 type SuggestionType = "pos" | "ocr" | "translation" | "emotion" | "intention" | "text" | "custom";
 type SuggestionStatus = "pending" | "accepted" | "denied" | "updated" | "approved" | "edited";
 type LabelSource = "csv_import" | "human" | "ai_accepted" | "ai_updated";
@@ -96,7 +97,9 @@ type ImportRecord = {
   filename: string | null;
   item_count: number;
   asset_count: number;
+  label_count: number;
   status: string;
+  column_mapping: Record<string, unknown>;
   created_at: string;
 };
 
@@ -165,6 +168,7 @@ type Job = {
   progress: number;
   message: string;
   error: string | null;
+  metadata: Record<string, unknown>;
 };
 
 type Toast = {
@@ -231,6 +235,36 @@ function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+const IMPORT_KIND_OPTIONS = [
+  { value: "generic", label: "Generic CSV" },
+  { value: "translation", label: "Translation labels" },
+  { value: "pos", label: "POS tags" },
+] satisfies { value: ImportKind; label: string }[];
+
+function csvFormatHint(importKind: ImportKind) {
+  if (importKind === "translation") {
+    return "CSV columns: text,translation,source,src,target";
+  }
+  if (importKind === "pos") {
+    return "CSV columns: text,tags. Tags must be UPOS values matching text tokens.";
+  }
+  return "Generic CSV uses text as the sentence column and creates labels from other columns.";
+}
+
+function importSuccessMessage(base: string, job: Job) {
+  const skipped = Number(job.metadata.skipped_count ?? 0);
+  if (!Number.isFinite(skipped) || skipped <= 0) {
+    return base;
+  }
+  return `${base}; skipped ${skipped} row${skipped === 1 ? "" : "s"}`;
+}
+
+function assertJobSucceeded(job: Job) {
+  if (job.status === "failed") {
+    throw new Error(job.error || "Import failed");
+  }
+}
+
 export function App() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
@@ -253,7 +287,9 @@ export function App() {
   const [languageName, setLanguageName] = useState("");
   const [manualText, setManualText] = useState("");
   const [manualSource, setManualSource] = useState<SourceType>("text");
+  const [manualImportKind, setManualImportKind] = useState<ImportKind>("generic");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [fileImportKind, setFileImportKind] = useState<ImportKind>("generic");
   const [tokenDrafts, setTokenDrafts] = useState<DraftMap>({});
   const [ocrDrafts, setOcrDrafts] = useState<TextDraftMap>({});
 
@@ -274,6 +310,7 @@ export function App() {
     (dashboard?.suggestion_counts["pos:approved"] ?? 0) +
     (dashboard?.suggestion_counts["pos:edited"] ?? 0);
   const pendingOcrCount = dashboard?.suggestion_counts["ocr:pending"] ?? 0;
+  const uploadFileIsCsv = uploadFile?.name.toLowerCase().endsWith(".csv") ?? false;
 
   useEffect(() => {
     void loadDatasets();
@@ -337,11 +374,11 @@ export function App() {
     }
   }
 
-  async function runAction<T>(callback: () => Promise<T>, successMessage: string) {
+  async function runAction<T>(callback: () => Promise<T>, successMessage: string | ((result: T) => string)) {
     setWorking(true);
     try {
       const result = await callback();
-      setToast({ tone: "green", message: successMessage });
+      setToast({ tone: "green", message: typeof successMessage === "function" ? successMessage(result) : successMessage });
       await refreshWorkspace();
       return result;
     } catch (error) {
@@ -400,29 +437,33 @@ export function App() {
 
   async function importManualText() {
     if (!selectedDatasetId || !manualText.trim()) return;
+    const importKind = manualSource === "csv" ? manualImportKind : "generic";
     await runAction(async () => {
       const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/imports`, {
         method: "POST",
-        body: JSON.stringify({ text: manualText, source_type: manualSource }),
+        body: JSON.stringify({ text: manualText, source_type: manualSource, import_kind: importKind }),
       });
       rememberJob(response.job);
+      assertJobSucceeded(response.job);
       return response;
-    }, "Text imported");
+    }, response => importSuccessMessage(importKind === "generic" ? "Text imported" : "CSV labels imported", response.job));
   }
 
   async function importFile() {
     if (!selectedDatasetId || !uploadFile) return;
     const form = new FormData();
     form.append("file", uploadFile);
+    form.append("import_kind", fileImportKind);
     await runAction(async () => {
       const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/imports`, {
         method: "POST",
         body: form,
       });
       rememberJob(response.job);
+      assertJobSucceeded(response.job);
       setUploadFile(null);
       return response;
-    }, "File imported");
+    }, response => importSuccessMessage(fileImportKind === "generic" ? "File imported" : "CSV labels imported", response.job));
   }
 
   async function runResearch(force = false) {
@@ -892,6 +933,20 @@ export function App() {
                         value={manualSource}
                         onChange={value => setManualSource((value as SourceType | null) ?? "text")}
                       />
+                      {manualSource === "csv" ? (
+                        <>
+                          <Select
+                            data={IMPORT_KIND_OPTIONS}
+                            label="CSV format"
+                            name="manualImportKind"
+                            value={manualImportKind}
+                            onChange={value => setManualImportKind((value as ImportKind | null) ?? "generic")}
+                          />
+                          <Text c="dimmed" size="xs">
+                            {csvFormatHint(manualImportKind)}
+                          </Text>
+                        </>
+                      ) : null}
                       <Textarea
                         autoComplete="off"
                         autosize
@@ -915,6 +970,21 @@ export function App() {
 
                   <PaperPanel title="Files and Imports" eyebrow="CSV, TXT, PDF, image">
                     <Stack gap="md">
+                      <Select
+                        data={IMPORT_KIND_OPTIONS}
+                        label="CSV format"
+                        name="fileImportKind"
+                        value={fileImportKind}
+                        onChange={value => setFileImportKind((value as ImportKind | null) ?? "generic")}
+                      />
+                      <Text
+                        c={fileImportKind !== "generic" && uploadFile && !uploadFileIsCsv ? "red" : "dimmed"}
+                        size="xs"
+                      >
+                        {fileImportKind !== "generic" && uploadFile && !uploadFileIsCsv
+                          ? "Translation and POS label imports require a .csv file."
+                          : csvFormatHint(fileImportKind)}
+                      </Text>
                       <Group align="end" wrap="wrap">
                         <FileInput
                           flex={1}
@@ -926,7 +996,7 @@ export function App() {
                         />
                         <Button
                           color="green"
-                          disabled={working || !uploadFile}
+                          disabled={working || !uploadFile || (fileImportKind !== "generic" && !uploadFileIsCsv)}
                           leftSection={<TbUpload aria-hidden="true" size={16} />}
                           onClick={() => void importFile()}
                         >
