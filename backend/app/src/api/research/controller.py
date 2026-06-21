@@ -26,3 +26,10 @@ def get_research(dataset_id: str, service: ResearchService = Depends(get_researc
     if research is None:
         raise HTTPException(status_code=404, detail="Research has not been generated for this dataset.")
     return research
+
+
+#TODO: See google doc for reference
+# Implement two endpoints
+# endpoit calls agents
+# angent returns list of sentences
+# another one returns notes on a language.
