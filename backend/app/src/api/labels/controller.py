@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from sqlmodel import Session
 
+from app.src.api.dependencies import AppServices, get_services
 from app.src.api.dependencies import get_labels_service
 from app.src.api.labels.service import LabelsService
+from app.src.api.research.service import ResearchService
+from app.src.jobs import JobRunner
 from app.src.models import (
     LabelSource,
     LabelsResponse,
@@ -22,13 +26,73 @@ from app.src.models import (
 router = APIRouter()
 
 
+def _labels_service_for_background(services: AppServices, session: Session) -> LabelsService:
+    jobs = JobRunner(session, services.tracer)
+    research = ResearchService(
+        session=session,
+        research_provider=services.research_provider,
+        jobs=jobs,
+        tracer=services.tracer,
+    )
+    return LabelsService(
+        session=session,
+        pos_provider=services.pos_provider,
+        translation_provider=services.translation_provider,
+        research_service=research,
+        jobs=jobs,
+    )
+
+
+def _run_pos_suggestions_background(
+    services: AppServices,
+    job_id: str,
+    dataset_id: str,
+    limit: int,
+) -> None:
+    with Session(services.db_engine) as session:
+        _labels_service_for_background(services, session).complete_queued_pos_suggestions(
+            job_id=job_id,
+            dataset_id=dataset_id,
+            limit=limit,
+        )
+
+
+def _run_translation_suggestions_background(
+    services: AppServices,
+    job_id: str,
+    dataset_id: str,
+    limit: int,
+) -> None:
+    with Session(services.db_engine) as session:
+        _labels_service_for_background(services, session).complete_queued_translation_suggestions(
+            job_id=job_id,
+            dataset_id=dataset_id,
+            limit=limit,
+        )
+
+
 @router.post("/datasets/{dataset_id}/pos-suggestions")
 def create_pos_suggestions(
     dataset_id: str,
     payload: PosSuggestionRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
     service: LabelsService = Depends(get_labels_service),
 ) -> dict:
-    suggestions, job = service.create_pos_suggestions(dataset_id, limit=payload.limit)
+    services = get_services(request)
+    if not services.settings.agent_jobs_background:
+        suggestions, job = service.create_pos_suggestions(dataset_id, limit=payload.limit)
+        return {"suggestions": suggestions, "job": job}
+
+    suggestions, job = service.queue_pos_suggestions(dataset_id, limit=payload.limit)
+    if job.status.value == "running":
+        background_tasks.add_task(
+            _run_pos_suggestions_background,
+            services,
+            job.id,
+            dataset_id,
+            payload.limit,
+        )
     return {"suggestions": suggestions, "job": job}
 
 
@@ -36,9 +100,24 @@ def create_pos_suggestions(
 def create_translation_suggestions(
     dataset_id: str,
     payload: TranslationSuggestionRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
     service: LabelsService = Depends(get_labels_service),
 ) -> dict:
-    suggestions, job = service.create_translation_suggestions(dataset_id, limit=payload.limit)
+    services = get_services(request)
+    if not services.settings.agent_jobs_background:
+        suggestions, job = service.create_translation_suggestions(dataset_id, limit=payload.limit)
+        return {"suggestions": suggestions, "job": job}
+
+    suggestions, job = service.queue_translation_suggestions(dataset_id, limit=payload.limit)
+    if job.status.value == "running":
+        background_tasks.add_task(
+            _run_translation_suggestions_background,
+            services,
+            job.id,
+            dataset_id,
+            payload.limit,
+        )
     return {"suggestions": suggestions, "job": job}
 
 

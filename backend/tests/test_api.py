@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import create_engine
@@ -5,6 +7,79 @@ from sqlmodel.pool import StaticPool
 
 from app.src.api import create_app
 from app.src.config import Settings
+from app.src.models import ResearchArtifact, ResearchSource, TokenSuggestion, TranslationProviderResult
+
+
+class FakeResearchProvider:
+    provider = "fake-browserbase"
+    model_name = "fake-claude"
+
+    def create_research(self, dataset, samples, research_type="pos"):
+        return ResearchArtifact(
+            dataset_id=dataset.id,
+            language_code=dataset.language_code,
+            type=research_type,
+            summary=f"{dataset.language_name} {research_type} notes",
+            guidelines=["Use reviewer examples first."],
+            sources=[ResearchSource(title="Fake source", url="https://example.test", excerpt="Fake excerpt")],
+            metadata={
+                "provider": self.provider,
+                "model": self.model_name,
+                "evaluation": {"score": 0.9, "feedback": "Useful for tests."},
+            },
+        )
+
+
+class FakePosProvider:
+    provider = "fake-anthropic"
+    model_name = "fake-claude"
+
+    def suggest(self, text, research=None):
+        tokens = text.split()
+        return [
+            TokenSuggestion(
+                index=index,
+                token=token,
+                suggested_pos="NOUN",
+                confidence=0.8,
+                rationale="Fake POS suggestion.",
+            )
+            for index, token in enumerate(tokens)
+        ]
+
+
+class FakeTranslationProvider:
+    provider = "fake-anthropic"
+    model_name = "fake-claude"
+
+    def suggest(self, *, text, direction, research, row_metadata=None):
+        return TranslationProviderResult(
+            output_text=f"translated: {text}",
+            provider=self.provider,
+            model=self.model_name,
+            confidence=0.8,
+            rationale="Fake translation suggestion.",
+            metadata={"evaluation": {"score": 0.8, "feedback": "Preserves meaning enough for tests."}},
+        )
+
+    def translate(self, text, direction="spanish_to_nahuatl"):
+        return TranslationProviderResult(
+            output_text="miak xochitl istak" if text == "muchas flores son blancas" else f"translated: {text}",
+            provider="local-demo",
+            model="fake-demo",
+            confidence=0.35,
+            rationale="Fake demo fallback.",
+            used_fallback=True,
+            warning={"provider": "aws-neuron-endpoint", "stage": "translation", "message": "Fake warning", "fallback": True},
+        )
+
+
+class FakeOcrProvider:
+    provider = "fake-anthropic"
+    model_name = "fake-claude"
+
+    def extract(self, asset):
+        return "fake extracted text", 0.8, "Fake OCR suggestion."
 
 
 @pytest.fixture
@@ -14,8 +89,16 @@ def client() -> TestClient:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    settings = Settings(database_url="sqlite://", seed_demo_data=True)
-    return TestClient(create_app(settings=settings, engine=engine, create_tables=True))
+    settings = Settings(database_url="sqlite://", seed_demo_data=True, agent_jobs_background=False)
+    app = create_app(settings=settings, engine=engine, create_tables=True)
+    app.state.services = replace(
+        app.state.services,
+        research_provider=FakeResearchProvider(),
+        pos_provider=FakePosProvider(),
+        translation_provider=FakeTranslationProvider(),
+        ocr_provider=FakeOcrProvider(),
+    )
+    return TestClient(app)
 
 
 def test_text_pos_research_review_and_training_flow(client: TestClient) -> None:
@@ -65,14 +148,15 @@ def test_research_is_cached_per_dataset_language(client: TestClient) -> None:
     assert second["job"]["metadata"]["cached"] is True
 
 
-def test_research_fallback_is_visible_in_metadata(client: TestClient) -> None:
+def test_research_provider_metadata_is_visible(client: TestClient) -> None:
     dataset = client.get("/datasets").json()[0]
 
     response = client.post(f"/datasets/{dataset['id']}/research").json()
 
-    assert response["job"]["metadata"]["used_fallback"] is True
-    assert response["job"]["metadata"]["warnings"]
-    assert response["research"]["warnings"]
+    assert response["job"]["metadata"]["provider"] == "fake-browserbase"
+    assert response["job"]["metadata"]["model"] == "fake-claude"
+    assert response["research"]["metadata"]["evaluation"]["score"] == 0.9
+    assert response["research"]["warnings"] == []
 
 
 def test_research_is_separate_by_type(client: TestClient) -> None:
@@ -196,6 +280,27 @@ def test_translation_suggestions_skip_existing_translation_labels_and_can_be_rev
     values = [label["value"]["text"] for label in labels]
     assert "miak xochitl istak" in values
     assert "nochanehua tlahtoa nahuatlahtolli" in values
+
+
+def test_ocr_uses_selected_image_import(client: TestClient) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "OCR pilot", "language_code": "ocr", "language_name": "OCR"},
+    ).json()
+    uploaded = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        files={"file": ("note.png", b"fake image bytes", "image/png")},
+    ).json()
+
+    response = client.post(
+        f"/datasets/{dataset['id']}/ocr",
+        json={"import_ids": [uploaded["import_record"]["id"]]},
+    ).json()
+
+    assert response["job"]["status"] == "succeeded"
+    assert response["job"]["metadata"]["provider"] == "fake-anthropic"
+    assert len(response["suggestions"]) == 1
+    assert response["suggestions"][0]["suggested_text"] == "fake extracted text"
 
 
 def test_csv_import_uses_text_column(client: TestClient) -> None:

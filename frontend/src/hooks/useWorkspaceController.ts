@@ -69,6 +69,7 @@ export function useWorkspaceController() {
   const [fileImportKind, setFileImportKind] = useState<ImportKind>("generic");
   const [tokenDrafts, setTokenDrafts] = useState<DraftMap>({});
   const [ocrDrafts, setOcrDrafts] = useState<TextDraftMap>({});
+  const [selectedOcrImportIds, setSelectedOcrImportIds] = useState<string[]>([]);
   const [translationDrafts, setTranslationDrafts] = useState<TextDraftMap>({});
 
   const selectedDataset = useMemo(
@@ -76,10 +77,11 @@ export function useWorkspaceController() {
     [datasets, selectedDatasetId],
   );
 
-  const latestAssetImport = useMemo(
-    () => dashboard?.imports.find(item => item.source_type === "pdf" || item.source_type === "image") ?? null,
+  const imageAssetImports = useMemo(
+    () => dashboard?.imports.filter(item => item.source_type === "image") ?? [],
     [dashboard?.imports],
   );
+  const latestAssetImport = imageAssetImports[0] ?? null;
 
   const acceptedPosCount =
     (dashboard?.suggestion_counts["pos:accepted"] ?? 0) +
@@ -152,6 +154,12 @@ export function useWorkspaceController() {
         setJobs(previous => previous.map(job => updates.get(job.id) ?? job));
         if (completed && selectedDatasetId) {
           await invalidateDashboard(selectedDatasetId);
+          await invalidateResearch("pos", selectedDatasetId);
+          await invalidateResearch("translation", selectedDatasetId);
+          await invalidateSuggestions("pos", selectedDatasetId);
+          await invalidateSuggestions("ocr", selectedDatasetId);
+          await invalidateSuggestions("translation", selectedDatasetId);
+          await invalidateTranslationLabels(selectedDatasetId);
         }
       } catch (error) {
         if (!cancelled) {
@@ -167,6 +175,15 @@ export function useWorkspaceController() {
       window.clearInterval(interval);
     };
   }, [activeJobIds, selectedDatasetId]);
+
+  useEffect(() => {
+    setSelectedOcrImportIds(current => {
+      const available = new Set(imageAssetImports.map(item => item.id));
+      const kept = current.filter(id => available.has(id));
+      if (kept.length > 0) return kept;
+      return imageAssetImports[0] ? [imageAssetImports[0].id] : [];
+    });
+  }, [imageAssetImports]);
 
   useEffect(() => {
     setTokenDrafts(previous => {
@@ -391,11 +408,11 @@ export function useWorkspaceController() {
   }
 
   async function runOcr() {
-    if (!selectedDatasetId) return;
+    if (!selectedDatasetId || selectedOcrImportIds.length === 0) return;
     await runAction(async () => {
       const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/ocr`, {
         method: "POST",
-        body: JSON.stringify({ import_id: latestAssetImport?.id ?? null }),
+        body: JSON.stringify({ import_ids: selectedOcrImportIds }),
       });
       rememberJob(response.job);
       return response;
@@ -502,6 +519,7 @@ export function useWorkspaceController() {
     handleTabChange,
     importFile,
     importManualText,
+    imageAssetImports,
     languageCode,
     languageName,
     latestAssetImport,
@@ -519,6 +537,7 @@ export function useWorkspaceController() {
     runResearch,
     selectedDataset,
     selectedDetail,
+    selectedOcrImportIds,
     setAddLanguageFormOpen,
     setDatasetName,
     setDeleteTarget,
@@ -531,6 +550,7 @@ export function useWorkspaceController() {
     setOcrDrafts,
     setOcrSuggestionsPage,
     setPosSuggestionsPage,
+    setSelectedOcrImportIds,
     setSelectedDatasetId,
     setSelectedDetail,
     setSidebarCollapsed,

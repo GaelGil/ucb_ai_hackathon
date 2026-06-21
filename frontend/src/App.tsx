@@ -124,6 +124,8 @@ export function App() {
               <Tabs.Panel value="ocr" pt="md">
                 <OcrSuggestionsTable
                   latestAssetImport={workspace.latestAssetImport}
+                  imageImports={workspace.imageAssetImports}
+                  selectedImportIds={workspace.selectedOcrImportIds}
                   suggestions={workspace.ocrSuggestions}
                   drafts={workspace.ocrDrafts}
                   pagination={workspace.workspaceData.ocrSuggestionsPage}
@@ -133,6 +135,7 @@ export function App() {
                   onOpenDetail={workspace.openDetail}
                   onPageChange={workspace.setOcrSuggestionsPage}
                   onRunOcr={() => void workspace.runOcr()}
+                  onSelectedImportIdsChange={workspace.setSelectedOcrImportIds}
                   onDraftChange={(id, value) => workspace.setOcrDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void workspace.reviewSuggestion(suggestion, action)}
                 />

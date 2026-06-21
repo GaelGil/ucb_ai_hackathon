@@ -135,6 +135,7 @@ def research_to_api(dataset: Dataset, language: Language, research: Research) ->
         summary=research.notes or "",
         guidelines=[str(item) for item in research.research_metadata.get("guidelines", [])],
         sources=[_research_source(source) for source in research.sources],
+        metadata=research.research_metadata,
         warnings=[api.ProviderWarning.model_validate(warning) for warning in warnings],
         created_at=research.created_at,
         updated_at=research.updated_at,

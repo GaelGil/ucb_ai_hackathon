@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     )
     db_echo: bool = False
     create_db_on_startup: bool = False
+    agent_jobs_background: bool = True
 
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
@@ -30,12 +31,25 @@ class Settings(BaseSettings):
     BROWSERBASE_API_KEY: str | None = None
     browserbase_base_url: str = "https://api.browserbase.com"
 
+    anthropic_api_key: str | None = None
+    anthropic_base_url: str = "https://api.anthropic.com"
+    anthropic_model: str = "claude-sonnet-4-5"
+    anthropic_version: str = "2023-06-01"
+    anthropic_max_tokens: int = 1600
+
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str = "gpt-4.1-mini"
 
+    arize_enabled: bool = False
+    arize_space_id: str | None = None
+    arize_api_key: str | None = None
+    arize_project_name: str = "langbase-hackathon"
+
     phoenix_enabled: bool = False
     phoenix_otel_endpoint: str = "http://localhost:6006/v1/traces"
+    phoenix_api_key: str | None = None
+    phoenix_project_name: str = "langbase-hackathon"
     otel_service_name: str = "langbase-backend"
 
     nahuatl_model_endpoint_url: str | None = None

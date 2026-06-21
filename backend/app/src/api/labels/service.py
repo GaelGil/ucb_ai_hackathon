@@ -61,33 +61,53 @@ class LabelsService:
 
         def callback(job: ApiJob) -> dict:
             del job
-            candidates = self._candidate_text_rows(dataset.id, LabelType.pos, limit)
-            for row in candidates:
-                tokens = self.pos_provider.suggest(row.text_content or "", research)
-                confidence = sum(token.confidence for token in tokens) / max(len(tokens), 1)
-                suggestion = AiSuggestion(
-                    dataset_id=dataset.id,
-                    data_row_id=row.id,
-                    research_id=research.id,
-                    label_type=LabelType.pos,
-                    original_value={
-                        "text": row.text_content,
-                        "tokens": [token.model_dump() for token in tokens],
-                    },
-                    confidence=round(confidence, 3),
-                    rationale="Generated with cached research notes and UPOS schema.",
-                    provider="local-demo",
-                    model_name="upos-rule-demo",
-                )
-                self.session.add(suggestion)
-                created.append(suggestion)
-            self.session.commit()
-            for suggestion in created:
-                self.session.refresh(suggestion)
-            return {"dataset_id": dataset.id, "created_count": len(created), "research_id": research.id}
+            rows, metadata = self._create_pos_suggestion_rows(dataset, research, limit)
+            created.extend(rows)
+            return metadata
 
         job = self.jobs.run("pos_suggestions", callback)
         return [ai_suggestion_to_api(suggestion) for suggestion in created], job
+
+    def queue_pos_suggestions(self, dataset_id: str, limit: int = 5) -> tuple[list[Suggestion], ApiJob]:
+        dataset = self._get_dataset(dataset_id)
+        research = self.research_service.get_research(dataset.id, ResearchType.pos)
+        if research is None:
+            job = self.jobs.create_failed(
+                "pos_suggestions",
+                "POS research must be generated before creating POS suggestions.",
+                metadata={"dataset_id": dataset.id, "research_type": ResearchType.pos.value},
+            )
+            return [], job
+        job = self.jobs.create_running(
+            "pos_suggestions",
+            metadata={
+                "dataset_id": dataset.id,
+                "research_id": research.id,
+                "research_type": ResearchType.pos.value,
+                "provider": getattr(self.pos_provider, "provider", "anthropic"),
+                "model": getattr(self.pos_provider, "model_name", None),
+                "limit": limit,
+            },
+            message="POS suggestions started",
+        )
+        return [], job
+
+    def complete_queued_pos_suggestions(self, *, job_id: str, dataset_id: str, limit: int = 5) -> ApiJob:
+        dataset = self._get_dataset(dataset_id)
+        research = self.research_service.get_research(dataset.id, ResearchType.pos)
+        if research is None:
+            return self.jobs.create_failed(
+                "pos_suggestions",
+                "POS research must be generated before creating POS suggestions.",
+                metadata={"dataset_id": dataset.id, "research_type": ResearchType.pos.value},
+            )
+
+        def callback(job: ApiJob) -> dict:
+            del job
+            _, metadata = self._create_pos_suggestion_rows(dataset, research, limit)
+            return metadata
+
+        return self.jobs.run_existing(job_id, callback)
 
     def create_translation_suggestions(self, dataset_id: str, limit: int = 5) -> tuple[list[Suggestion], ApiJob]:
         dataset = self._get_dataset(dataset_id)
@@ -103,52 +123,53 @@ class LabelsService:
 
         def callback(job: ApiJob) -> dict:
             del job
-            candidates = self._candidate_text_rows(dataset.id, LabelType.translation, limit)
-            direction = f"spanish_to_{dataset.language.code}"
-            warnings: list[dict] = []
-            for row in candidates:
-                result = self.translation_provider.translate(row.text_content or "", direction)
-                if result.used_fallback and result.warning:
-                    warning = result.warning.model_dump(mode="json")
-                    warnings.append(warning)
-                    with self.research_service.tracer.span(
-                        "translation.fallback",
-                        dataset_id=dataset.id,
-                        provider=warning.get("provider"),
-                        stage=warning.get("stage"),
-                    ):
-                        pass
-                suggestion = AiSuggestion(
-                    dataset_id=dataset.id,
-                    data_row_id=row.id,
-                    research_id=research.id,
-                    label_type=LabelType.translation,
-                    original_value={
-                        "source_text": row.text_content,
-                        "text": result.output_text,
-                        "direction": direction,
-                    },
-                    confidence=0.72,
-                    rationale=f"Generated with cached translation research profile {research.id}.",
-                    provider=result.provider,
-                    model_name=result.model,
-                )
-                self.session.add(suggestion)
-                created.append(suggestion)
-            self.session.commit()
-            for suggestion in created:
-                self.session.refresh(suggestion)
-            return {
-                "dataset_id": dataset.id,
-                "created_count": len(created),
-                "research_id": research.id,
-                "research_type": ResearchType.translation.value,
-                "used_fallback": bool(warnings),
-                "warnings": warnings,
-            }
+            rows, metadata = self._create_translation_suggestion_rows(dataset, research, limit)
+            created.extend(rows)
+            return metadata
 
         job = self.jobs.run("translation_suggestions", callback)
         return [ai_suggestion_to_api(suggestion) for suggestion in created], job
+
+    def queue_translation_suggestions(self, dataset_id: str, limit: int = 5) -> tuple[list[Suggestion], ApiJob]:
+        dataset = self._get_dataset(dataset_id)
+        research = self.research_service.get_research(dataset.id, ResearchType.translation)
+        if research is None:
+            job = self.jobs.create_failed(
+                "translation_suggestions",
+                "Translation research must be generated before creating translation suggestions.",
+                metadata={"dataset_id": dataset.id, "research_type": ResearchType.translation.value},
+            )
+            return [], job
+        job = self.jobs.create_running(
+            "translation_suggestions",
+            metadata={
+                "dataset_id": dataset.id,
+                "research_id": research.id,
+                "research_type": ResearchType.translation.value,
+                "provider": getattr(self.translation_provider, "provider", "anthropic"),
+                "model": getattr(self.translation_provider, "model_name", None),
+                "limit": limit,
+            },
+            message="Translation suggestions started",
+        )
+        return [], job
+
+    def complete_queued_translation_suggestions(self, *, job_id: str, dataset_id: str, limit: int = 5) -> ApiJob:
+        dataset = self._get_dataset(dataset_id)
+        research = self.research_service.get_research(dataset.id, ResearchType.translation)
+        if research is None:
+            return self.jobs.create_failed(
+                "translation_suggestions",
+                "Translation research must be generated before creating translation suggestions.",
+                metadata={"dataset_id": dataset.id, "research_type": ResearchType.translation.value},
+            )
+
+        def callback(job: ApiJob) -> dict:
+            del job
+            _, metadata = self._create_translation_suggestion_rows(dataset, research, limit)
+            return metadata
+
+        return self.jobs.run_existing(job_id, callback)
 
     def list_suggestions(
         self,
@@ -285,6 +306,190 @@ class LabelsService:
             accepted_sentence_count=accepted_count,
             minimum_examples_met=accepted_count >= 20,
         )
+
+    def _create_pos_suggestion_rows(
+        self, dataset: Dataset, research, limit: int
+    ) -> tuple[list[AiSuggestion], dict]:
+        created: list[AiSuggestion] = []
+        candidates = self._candidate_text_rows(dataset.id, LabelType.pos, limit)
+        evaluations: list[dict] = []
+        with self.research_service.tracer.span(
+            "pos.suggestions.create",
+            dataset_id=dataset.id,
+            research_id=research.id,
+            candidate_count=len(candidates),
+        ):
+            for row in candidates:
+                tokens = self.pos_provider.suggest(row.text_content or "", research)
+                confidence = sum(token.confidence for token in tokens) / max(len(tokens), 1)
+                evaluation = self._evaluate_pos(row.text_content or "", tokens, research, dataset.id, row.id)
+                if evaluation:
+                    evaluations.append(evaluation)
+                suggestion = AiSuggestion(
+                    dataset_id=dataset.id,
+                    data_row_id=row.id,
+                    research_id=research.id,
+                    label_type=LabelType.pos,
+                    original_value={
+                        "text": row.text_content,
+                        "tokens": [token.model_dump() for token in tokens],
+                        "metadata": {"evaluation": evaluation} if evaluation else {},
+                    },
+                    confidence=round(confidence, 3),
+                    rationale=f"Generated by Claude with cached POS research profile {research.id}.",
+                    provider=getattr(self.pos_provider, "provider", "anthropic"),
+                    model_name=getattr(self.pos_provider, "model_name", None),
+                )
+                self.session.add(suggestion)
+                created.append(suggestion)
+        self.session.commit()
+        for suggestion in created:
+            self.session.refresh(suggestion)
+        return created, {
+            "dataset_id": dataset.id,
+            "created_count": len(created),
+            "research_id": research.id,
+            "research_type": ResearchType.pos.value,
+            "provider": getattr(self.pos_provider, "provider", "anthropic"),
+            "model": getattr(self.pos_provider, "model_name", None),
+            "evaluation": self._evaluation_summary(evaluations),
+        }
+
+    def _create_translation_suggestion_rows(
+        self, dataset: Dataset, research, limit: int
+    ) -> tuple[list[AiSuggestion], dict]:
+        created: list[AiSuggestion] = []
+        candidates = self._candidate_text_rows(dataset.id, LabelType.translation, limit)
+        directions: list[str] = []
+        evaluations: list[dict] = []
+        with self.research_service.tracer.span(
+            "translation.suggestions.create",
+            dataset_id=dataset.id,
+            research_id=research.id,
+            candidate_count=len(candidates),
+        ):
+            for row in candidates:
+                direction = self._translation_direction(row, dataset)
+                directions.append(direction)
+                result = self.translation_provider.suggest(
+                    text=row.text_content or "",
+                    direction=direction,
+                    research=research,
+                    row_metadata=row.row_metadata,
+                )
+                evaluation = self._evaluate_translation(
+                    row.text_content or "",
+                    direction,
+                    result,
+                    research,
+                    row.row_metadata,
+                    dataset.id,
+                    row.id,
+                )
+                if evaluation:
+                    evaluations.append(evaluation)
+                    result.metadata = {**(result.metadata or {}), "evaluation": evaluation}
+                suggestion = AiSuggestion(
+                    dataset_id=dataset.id,
+                    data_row_id=row.id,
+                    research_id=research.id,
+                    label_type=LabelType.translation,
+                    original_value={
+                        "source_text": row.text_content,
+                        "text": result.output_text,
+                        "direction": direction,
+                        "metadata": result.metadata,
+                    },
+                    confidence=result.confidence,
+                    rationale=result.rationale or f"Generated with cached translation research profile {research.id}.",
+                    provider=result.provider,
+                    model_name=result.model,
+                )
+                self.session.add(suggestion)
+                created.append(suggestion)
+        self.session.commit()
+        for suggestion in created:
+            self.session.refresh(suggestion)
+        return created, {
+            "dataset_id": dataset.id,
+            "created_count": len(created),
+            "research_id": research.id,
+            "research_type": ResearchType.translation.value,
+            "provider": getattr(self.translation_provider, "provider", "anthropic"),
+            "model": getattr(self.translation_provider, "model_name", None),
+            "directions": sorted(set(directions)),
+            "used_fallback": False,
+            "warnings": [],
+            "evaluation": self._evaluation_summary(evaluations),
+        }
+
+    def _evaluate_pos(self, text: str, tokens, research, dataset_id: str, row_id: str) -> dict:
+        evaluator = getattr(self.pos_provider, "evaluate", None)
+        if evaluator is None:
+            return {}
+        try:
+            evaluation = evaluator(text, tokens, research)
+        except Exception as exc:
+            evaluation = {"name": "pos_quality", "kind": "llm", "label": "error", "feedback": str(exc)}
+        self.research_service.tracer.record_evaluation(
+            "pos_quality",
+            evaluation,
+            dataset_id=dataset_id,
+            data_row_id=row_id,
+            research_id=research.id,
+        )
+        return evaluation
+
+    def _evaluate_translation(
+        self,
+        text: str,
+        direction: str,
+        result,
+        research,
+        row_metadata: dict,
+        dataset_id: str,
+        row_id: str,
+    ) -> dict:
+        evaluator = getattr(self.translation_provider, "evaluate", None)
+        if evaluator is None:
+            return {}
+        try:
+            evaluation = evaluator(
+                text=text,
+                direction=direction,
+                result=result,
+                research=research,
+                row_metadata=row_metadata,
+            )
+        except Exception as exc:
+            evaluation = {"name": "translation_quality", "kind": "llm", "label": "error", "feedback": str(exc)}
+        self.research_service.tracer.record_evaluation(
+            "translation_quality",
+            evaluation,
+            dataset_id=dataset_id,
+            data_row_id=row_id,
+            research_id=research.id,
+            direction=direction,
+        )
+        return evaluation
+
+    def _evaluation_summary(self, evaluations: list[dict]) -> dict:
+        if not evaluations:
+            return {}
+        scores = [float(item["score"]) for item in evaluations if isinstance(item.get("score"), (int, float))]
+        return {
+            "count": len(evaluations),
+            "average_score": round(sum(scores) / len(scores), 3) if scores else None,
+            "labels": [item.get("label") for item in evaluations if item.get("label")],
+            "feedback": [item.get("feedback") for item in evaluations if item.get("feedback")],
+        }
+
+    def _translation_direction(self, row: DataRow, dataset: Dataset) -> str:
+        csv_metadata = row.row_metadata.get("csv") if isinstance(row.row_metadata, dict) else None
+        csv_metadata = csv_metadata if isinstance(csv_metadata, dict) else {}
+        source = str(csv_metadata.get("src") or csv_metadata.get("source_language") or "auto").strip() or "auto"
+        target = str(csv_metadata.get("target") or dataset.language.code).strip() or dataset.language.code
+        return f"{source}_to_{target}"
 
     def _upsert_label_for_suggestion(self, suggestion: AiSuggestion) -> None:
         label = self.session.exec(select(Label).where(Label.ai_suggestion_id == suggestion.id)).first()

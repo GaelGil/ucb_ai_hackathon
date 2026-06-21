@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import csv
 import json
 from io import StringIO
@@ -579,6 +580,9 @@ class DataService:
             del job
             path = storage_path_for_upload(dataset.id, record.id, filename)
             bucket, storage_path = self.storage.upload(path=path, data=data, content_type=content_type)
+            row_metadata: dict[str, Any] = {"filename": filename, "content_type": content_type, "byte_count": len(data)}
+            if db_source_type == DataSourceType.image and not self.storage.is_configured:
+                row_metadata["inline_data_base64"] = base64.b64encode(data).decode("ascii")
             row = DataRow(
                 dataset_id=dataset.id,
                 import_id=record.id,
@@ -586,7 +590,7 @@ class DataService:
                 source_type=db_source_type,
                 storage_bucket=bucket,
                 storage_path=storage_path,
-                row_metadata={"filename": filename, "content_type": content_type, "byte_count": len(data)},
+                row_metadata=row_metadata,
             )
             self.session.add(row)
             record.storage_bucket = bucket
@@ -611,49 +615,175 @@ class DataService:
         self,
         dataset_id: str,
         import_id: str | None = None,
+        import_ids: list[str] | None = None,
     ) -> tuple[list[api.Suggestion], api.Job]:
         dataset = self._get_dataset(dataset_id)
         created: list[AiSuggestion] = []
 
         def callback(job: api.Job) -> dict:
             del job
-            statement = select(DataRow).where(DataRow.dataset_id == dataset.id).where(
-                DataRow.source_type.in_([DataSourceType.pdf, DataSourceType.image])
-            )
-            if import_id:
-                statement = statement.where(DataRow.import_id == import_id)
-            for row in self.session.exec(statement).all():
+            rows, metadata = self._create_ocr_suggestion_rows(dataset, import_id=import_id, import_ids=import_ids)
+            created.extend(rows)
+            return metadata
+
+        job = self.jobs.run("ocr", callback)
+        from app.src.api.mappers import ai_suggestion_to_api
+
+        return [ai_suggestion_to_api(suggestion) for suggestion in created], job
+
+    def queue_ocr_suggestions(
+        self,
+        dataset_id: str,
+        import_id: str | None = None,
+        import_ids: list[str] | None = None,
+    ) -> tuple[list[api.Suggestion], api.Job]:
+        dataset = self._get_dataset(dataset_id)
+        selected_import_ids = self._selected_import_ids(import_id=import_id, import_ids=import_ids)
+        job = self.jobs.create_running(
+            "ocr",
+            metadata={
+                "dataset_id": dataset.id,
+                "import_ids": sorted(selected_import_ids) if selected_import_ids else [],
+                "provider": getattr(self.ocr_provider, "provider", "anthropic"),
+                "model": getattr(self.ocr_provider, "model_name", None),
+            },
+            message="OCR started",
+        )
+        return [], job
+
+    def complete_queued_ocr_suggestions(
+        self,
+        *,
+        job_id: str,
+        dataset_id: str,
+        import_id: str | None = None,
+        import_ids: list[str] | None = None,
+    ) -> api.Job:
+        dataset = self._get_dataset(dataset_id)
+
+        def callback(job: api.Job) -> dict:
+            del job
+            _, metadata = self._create_ocr_suggestion_rows(dataset, import_id=import_id, import_ids=import_ids)
+            return metadata
+
+        return self.jobs.run_existing(job_id, callback)
+
+    def _create_ocr_suggestion_rows(
+        self,
+        dataset: Dataset,
+        *,
+        import_id: str | None = None,
+        import_ids: list[str] | None = None,
+    ) -> tuple[list[AiSuggestion], dict[str, Any]]:
+        selected_import_ids = self._selected_import_ids(import_id=import_id, import_ids=import_ids)
+        statement = select(DataRow).where(DataRow.dataset_id == dataset.id).where(DataRow.source_type == DataSourceType.image)
+        if selected_import_ids:
+            statement = statement.where(DataRow.import_id.in_(sorted(selected_import_ids)))
+        rows = self.session.exec(statement).all()
+        if not rows:
+            raise RuntimeError("Select at least one uploaded image before running OCR.")
+
+        created: list[AiSuggestion] = []
+        evaluations: list[dict[str, Any]] = []
+        with self.jobs.tracer.span(
+            "ocr.suggestions.create",
+            dataset_id=dataset.id,
+            import_count=len(selected_import_ids) if selected_import_ids else "all",
+            image_count=len(rows),
+        ):
+            for row in rows:
                 asset = api.UploadedAsset(
                     dataset_id=dataset.id,
                     import_id=row.import_id or "",
                     source_type=api.SourceType(row.source_type.value),
                     filename=str(row.row_metadata.get("filename") or row.storage_path or "upload"),
                     content_type=row.row_metadata.get("content_type"),
-                    data=b"",
+                    data=self._asset_bytes(row),
                     created_at=row.created_at,
                 )
                 text, confidence, rationale = self.ocr_provider.extract(asset)
+                evaluation = self._evaluate_ocr(asset, text, confidence, rationale, dataset.id, row.id)
+                if evaluation:
+                    evaluations.append(evaluation)
                 suggestion = AiSuggestion(
                     dataset_id=dataset.id,
                     data_row_id=row.id,
                     label_type=LabelType.ocr,
                     status=SuggestionStatus.pending,
-                    original_value={"text": text, "storage_path": row.storage_path},
+                    original_value={
+                        "text": text,
+                        "storage_path": row.storage_path,
+                        "filename": asset.filename,
+                        "metadata": {"evaluation": evaluation} if evaluation else {},
+                    },
                     confidence=confidence,
                     rationale=rationale,
-                    provider="local-ocr",
+                    provider=getattr(self.ocr_provider, "provider", "anthropic"),
+                    model_name=getattr(self.ocr_provider, "model_name", None),
                 )
                 self.session.add(suggestion)
                 created.append(suggestion)
-            self.session.commit()
-            for suggestion in created:
-                self.session.refresh(suggestion)
-            return {"dataset_id": dataset.id, "created_count": len(created)}
+        self.session.commit()
+        for suggestion in created:
+            self.session.refresh(suggestion)
+        return created, {
+            "dataset_id": dataset.id,
+            "created_count": len(created),
+            "import_ids": sorted(selected_import_ids) if selected_import_ids else [],
+            "provider": getattr(self.ocr_provider, "provider", "anthropic"),
+            "model": getattr(self.ocr_provider, "model_name", None),
+            "evaluation": self._evaluation_summary(evaluations),
+        }
 
-        job = self.jobs.run("ocr", callback)
-        from app.src.api.mappers import ai_suggestion_to_api
+    def _evaluate_ocr(
+        self,
+        asset: api.UploadedAsset,
+        text: str,
+        confidence: float,
+        rationale: str,
+        dataset_id: str,
+        row_id: str,
+    ) -> dict[str, Any]:
+        evaluator = getattr(self.ocr_provider, "evaluate", None)
+        if evaluator is None:
+            return {}
+        try:
+            evaluation = evaluator(asset, text, confidence, rationale)
+        except Exception as exc:
+            evaluation = {"name": "ocr_quality", "kind": "llm", "label": "error", "feedback": str(exc)}
+        self.jobs.tracer.record_evaluation(
+            "ocr_quality",
+            evaluation,
+            dataset_id=dataset_id,
+            data_row_id=row_id,
+            import_id=asset.import_id,
+        )
+        return evaluation
 
-        return [ai_suggestion_to_api(suggestion) for suggestion in created], job
+    def _evaluation_summary(self, evaluations: list[dict[str, Any]]) -> dict[str, Any]:
+        if not evaluations:
+            return {}
+        scores = [float(item["score"]) for item in evaluations if isinstance(item.get("score"), (int, float))]
+        return {
+            "count": len(evaluations),
+            "average_score": round(sum(scores) / len(scores), 3) if scores else None,
+            "labels": [item.get("label") for item in evaluations if item.get("label")],
+            "feedback": [item.get("feedback") for item in evaluations if item.get("feedback")],
+        }
+
+    def _asset_bytes(self, row: DataRow) -> bytes:
+        inline = row.row_metadata.get("inline_data_base64") if isinstance(row.row_metadata, dict) else None
+        if inline:
+            return base64.b64decode(str(inline))
+        if row.storage_bucket and row.storage_path:
+            return self.storage.download(bucket=row.storage_bucket, path=row.storage_path)
+        raise RuntimeError("Uploaded image bytes are not available for OCR.")
+
+    def _selected_import_ids(self, *, import_id: str | None, import_ids: list[str] | None) -> set[str]:
+        selected = {value for value in (import_ids or []) if value}
+        if import_id:
+            selected.add(import_id)
+        return selected
 
     def _create_csv_rows(
         self,

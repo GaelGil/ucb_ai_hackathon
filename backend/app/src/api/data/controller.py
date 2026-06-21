@@ -41,6 +41,28 @@ def _run_import_text_background(
         )
 
 
+def _run_ocr_background(
+    services: AppServices,
+    job_id: str,
+    dataset_id: str,
+    import_id: str | None,
+    import_ids: list[str] | None,
+) -> None:
+    with Session(services.db_engine) as session:
+        service = DataService(
+            session=session,
+            ocr_provider=services.ocr_provider,
+            jobs=JobRunner(session, services.tracer),
+            storage=services.storage,
+        )
+        service.complete_queued_ocr_suggestions(
+            job_id=job_id,
+            dataset_id=dataset_id,
+            import_id=import_id,
+            import_ids=import_ids,
+        )
+
+
 @router.post("/datasets/{dataset_id}/imports", response_model=ImportResponse)
 async def create_import(
     dataset_id: str,
@@ -155,9 +177,33 @@ async def create_import(
 def create_ocr(
     dataset_id: str,
     payload: OcrRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
     service: DataService = Depends(get_data_service),
 ) -> dict:
-    suggestions, job = service.create_ocr_suggestions(dataset_id, import_id=payload.import_id)
+    services = get_services(request)
+    if not services.settings.agent_jobs_background:
+        suggestions, job = service.create_ocr_suggestions(
+            dataset_id,
+            import_id=payload.import_id,
+            import_ids=payload.import_ids,
+        )
+        return {"suggestions": suggestions, "job": job}
+
+    suggestions, job = service.queue_ocr_suggestions(
+        dataset_id,
+        import_id=payload.import_id,
+        import_ids=payload.import_ids,
+    )
+    if job.status.value == "running":
+        background_tasks.add_task(
+            _run_ocr_background,
+            services,
+            job.id,
+            dataset_id,
+            payload.import_id,
+            payload.import_ids,
+        )
     return {"suggestions": suggestions, "job": job}
 
 

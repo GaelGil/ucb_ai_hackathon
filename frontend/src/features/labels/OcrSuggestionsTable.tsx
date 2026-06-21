@@ -1,4 +1,4 @@
-import { Badge, Box, Button, Group, ScrollArea, Stack, Table, Text, Textarea } from "@mantine/core";
+import { Badge, Box, Button, Group, MultiSelect, ScrollArea, Stack, Table, Text, Textarea } from "@mantine/core";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useMemo } from "react";
 
@@ -20,6 +20,8 @@ import { SuggestionActions } from "./SuggestionActions";
 
 export function OcrSuggestionsTable({
   latestAssetImport,
+  imageImports,
+  selectedImportIds,
   suggestions,
   drafts,
   pagination,
@@ -29,10 +31,13 @@ export function OcrSuggestionsTable({
   onOpenDetail,
   onPageChange,
   onRunOcr,
+  onSelectedImportIdsChange,
   onDraftChange,
   onReview,
 }: {
   latestAssetImport: ImportRecord | null;
+  imageImports: ImportRecord[];
+  selectedImportIds: string[];
   suggestions: Suggestion[];
   drafts: TextDraftMap;
   pagination: PaginationMeta;
@@ -42,9 +47,15 @@ export function OcrSuggestionsTable({
   onOpenDetail: (detail: DetailContent) => void;
   onPageChange: (pageIndex: number) => void;
   onRunOcr: () => void;
+  onSelectedImportIdsChange: (ids: string[]) => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
 }) {
+  const imageOptions = imageImports.map(item => ({
+    value: item.id,
+    label: item.filename ?? item.id,
+  }));
+
   const columns = useMemo(() => {
     const columnHelper = createColumnHelper<Suggestion>();
 
@@ -127,18 +138,29 @@ export function OcrSuggestionsTable({
   });
 
   return (
-    <PaperPanel title="OCR" eyebrow="Image/PDF, text on screen, suggestions">
+    <PaperPanel title="OCR" eyebrow="Images, text on screen, suggestions">
       <Stack gap="md">
-        <Group justify="space-between">
-          <Box>
+        <Group align="end" justify="space-between">
+          <Stack gap={4} style={{ flex: 1 }}>
             <Text c="dimmed" size="sm">
               Pending rows: {pagination.total}
             </Text>
             <Text c="dimmed" size="xs">
-              Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
+              Latest image import: {latestAssetImport?.filename ?? "No image import yet"}
             </Text>
-          </Box>
-          <Button color="green" disabled={working || !latestAssetImport} onClick={onRunOcr}>
+            <MultiSelect
+              aria-label="Image imports for OCR"
+              clearable
+              data={imageOptions}
+              disabled={working || imageOptions.length === 0}
+              maxDropdownHeight={220}
+              onChange={onSelectedImportIdsChange}
+              placeholder="Select image uploads"
+              searchable
+              value={selectedImportIds}
+            />
+          </Stack>
+          <Button color="green" disabled={working || selectedImportIds.length === 0} onClick={onRunOcr}>
             Run OCR
           </Button>
         </Group>

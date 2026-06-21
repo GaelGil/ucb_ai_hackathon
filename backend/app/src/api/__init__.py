@@ -40,10 +40,10 @@ def create_app(
         db_engine=db_engine,
         settings=settings,
         tracer=tracer,
-        research_provider=BrowserbaseResearchProvider(settings=settings),
-        ocr_provider=OCRProvider(),
-        pos_provider=PosAnnotationProvider(),
-        translation_provider=TranslationProvider(settings=settings),
+        research_provider=BrowserbaseResearchProvider(settings=settings, tracer=tracer),
+        ocr_provider=OCRProvider(settings=settings, tracer=tracer),
+        pos_provider=PosAnnotationProvider(settings=settings, tracer=tracer),
+        translation_provider=TranslationProvider(settings=settings, tracer=tracer),
         storage=SupabaseStorage(settings),
     )
 
