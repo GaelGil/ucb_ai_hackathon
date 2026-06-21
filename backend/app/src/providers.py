@@ -470,8 +470,8 @@ class BrowserbaseResearchProvider:
                 "Wikipedia dictionary parallel corpus"
             )
         return (
-            f"{dataset.language_name} language parts of speech grammar morphology "
-            "Universal Dependencies Wikipedia examples"
+            f"{dataset.language_name} language POS tagging word order SVO SOV VSO "
+            "syntax morphology particles adpositions Universal Dependencies UPOS examples"
         )
 
     def _research_prompt(
@@ -482,29 +482,76 @@ class BrowserbaseResearchProvider:
         research_type: str,
     ) -> str:
         source_payload = [source.model_dump() for source in sources]
-        task = (
-            "translation guidance, source/target language considerations, examples, and review cautions"
-            if research_type == "translation"
-            else "part-of-speech tagging guidance using Universal Dependencies UPOS tags"
-        )
+        if research_type == "translation":
+            task = "translation guidance, source/target language considerations, examples, and review cautions"
+            research_focus = [
+                "translation direction and source/target language considerations",
+                "orthography and common spelling conventions",
+                "parallel examples or dictionaries grounded in the provided sources",
+                "review cautions for low-resource translation uncertainty",
+            ]
+            required_json_shape: dict[str, Any] = {
+                "summary": "short research notes for the reviewer",
+                "language_profile": "what type of language this is and important grammar facts",
+                "task_notes": "task-specific notes",
+                "guidelines": ["concise actionable guideline"],
+                "examples": ["short example relevant to the task"],
+                "evaluation": {
+                    "score": 0.0,
+                    "feedback": "judge whether the notes are grounded, useful, and task-specific",
+                },
+            }
+        else:
+            task = "part-of-speech tagging guidance using Universal Dependencies UPOS tags"
+            research_focus = [
+                "basic word order: SVO, SOV, VSO, verb-initial, free/flexible, or unknown",
+                "morphology type and how inflection, clitics, particles, or affixes affect token-level POS tagging",
+                "which UPOS categories are common, rare, or not clearly attested for this language",
+                "function words such as adpositions, auxiliaries, determiners, particles, pronouns, and conjunctions",
+                "tokenization issues that could make one written word contain multiple syntactic roles",
+                "short token-level examples in the form token -> UPOS -> reason",
+            ]
+            required_json_shape = {
+                "summary": "short POS tagging research notes for the reviewer",
+                "language_profile": {
+                    "morphology_type": "analytic|agglutinative|fusional|polysynthetic|isolating|mixed|unknown",
+                    "basic_word_order": "SVO|SOV|VSO|VOS|OVS|OSV|free/flexible|unknown",
+                    "syntax_notes": ["important syntax fact for POS tagging"],
+                },
+                "task_notes": "POS-specific notes about ambiguity, tokenization, and UPOS choices",
+                "upos_inventory": {
+                    "common": ["NOUN"],
+                    "rare_or_uncertain": ["X"],
+                    "notes": "which UPOS tags need special care for this language",
+                },
+                "guidelines": ["concise actionable POS tagging guideline"],
+                "examples": [
+                    {
+                        "text": "short language example",
+                        "tokens": [
+                            {"token": "word", "upos": "NOUN", "reason": "brief syntactic reason"},
+                        ],
+                    }
+                ],
+                "evaluation": {
+                    "score": 0.0,
+                    "feedback": "judge whether the notes are grounded, useful for UPOS tagging, and language-specific",
+                },
+            }
         return json.dumps(
             {
                 "language": dataset.language_name,
                 "language_code": dataset.language_code,
                 "task": task,
+                "research_focus": research_focus,
+                "instructions": [
+                    "Use only the provided Browserbase sources and uploaded samples as evidence.",
+                    "Prefer concrete syntax and tagging guidance over generic language description.",
+                    "Call out uncertainty instead of guessing when sources do not establish a fact.",
+                ],
                 "uploaded_samples": samples[:12],
                 "sources": source_payload,
-                "required_json_shape": {
-                    "summary": "short research notes for the reviewer",
-                    "language_profile": "what type of language this is and important grammar facts",
-                    "task_notes": "task-specific notes",
-                    "guidelines": ["concise actionable guideline"],
-                    "examples": ["short example relevant to the task"],
-                    "evaluation": {
-                        "score": 0.0,
-                        "feedback": "judge whether the notes are grounded, useful, and task-specific",
-                    },
-                },
+                "required_json_shape": required_json_shape,
             },
             ensure_ascii=False,
         )
@@ -519,7 +566,8 @@ class BrowserbaseResearchProvider:
             ]
         return [
             "Use Universal Dependencies UPOS tags for every token.",
-            "Use the cached language notes when a form is ambiguous.",
+            "Use cached syntax, morphology, and word-order notes when a form is ambiguous.",
+            "Prefer language-specific POS evidence over defaulting to English or Spanish patterns.",
             "Tag punctuation as PUNCT and numerals as NUM.",
             "Use X only when no stronger UPOS category is justified.",
         ]
@@ -604,6 +652,12 @@ class PosAnnotationProvider:
                 "tokens": [{"index": index, "token": token} for index, token in enumerate(tokens)],
                 "upos_tags": sorted(UPOS_TAGS),
                 "research": research.model_dump(mode="json") if research else None,
+                "instructions": [
+                    "Use the cached POS research as task context before assigning tags.",
+                    "Apply language-specific syntax, morphology, word-order, and tokenization notes when available.",
+                    "Preserve token indexes exactly and assign one valid UPOS tag per input token.",
+                    "When uncertain, choose the best-supported UPOS tag and lower confidence instead of using X by default.",
+                ],
                 "required_json_shape": {
                     "tokens": [
                         {
@@ -627,6 +681,7 @@ class PosAnnotationProvider:
             task_name="pos_suggestions",
             system=(
                 "You tag tokens with Universal Dependencies UPOS labels. "
+                "Use the provided language research for syntax, morphology, word order, and POS inventory. "
                 "Return exactly one JSON object and preserve token indexes."
             ),
             prompt=prompt,
