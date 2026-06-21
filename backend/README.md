@@ -27,7 +27,7 @@ app/
 migrations/               # Alembic migration environment and versions
 ```
 
-The current public API still uses the in-memory repository. The SQLModel repositories and Alembic migrations are the persistence groundwork for a later DB-backed implementation pass.
+The public API is backed by SQLModel tables and is intended to run against Supabase Postgres. Tests use in-memory SQLite only for fast isolated verification.
 
 ## Run
 
@@ -46,15 +46,18 @@ uv run python -m compileall app main.py
 
 ## Environment
 
-The app works without credentials using deterministic local fallbacks. Copy `.env.example` to `.env` or `.env.local` and set credentials for real integrations.
+Copy `.env.example` to `.env` or `.env.local` and set `DATABASE_URL` before starting the API. Supabase Storage credentials are required when uploading PDFs/images to cloud storage; without them tests can still exercise the metadata path.
 
 pydantic-settings loads `backend/.env` and then `backend/.env.local`; real environment variables override both.
 
 Common variables:
 
 ```bash
-DATABASE_URL=sqlite:///./langbase.db
+DATABASE_URL=postgresql+psycopg2://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
 DB_ECHO=false
+SUPABASE_URL=https://<ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_STORAGE_BUCKET=langbase-uploads
 BROWSERBASE_API_KEY=...
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=...
@@ -65,7 +68,7 @@ NAHUATL_MODEL_ENDPOINT_URL=https://your-neuron-endpoint/invoke
 NAHUATL_MODEL_NAME=somosnlp-hackathon-2022/t5-small-spanish-nahuatl
 ```
 
-For Supabase, use a SQLAlchemy/psycopg2 URL, for example:
+Use a SQLAlchemy/psycopg2 URL from Supabase, for example:
 
 ```bash
 DATABASE_URL=postgresql+psycopg2://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require

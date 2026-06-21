@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Request
 
 from app.src.api.data.service import DataService
@@ -24,6 +26,7 @@ async def create_import(
         manual_text = form.get("manual_text")
         source_type_value = form.get("source_type")
         source_type = SourceType(str(source_type_value)) if source_type_value else None
+        column_mapping = _column_mapping(form.get("column_mapping"))
 
         if file is not None and hasattr(file, "read"):
             data = await file.read()
@@ -39,27 +42,30 @@ async def create_import(
                 )
                 return ImportResponse(import_record=record, job=job)
             text = data.decode("utf-8", errors="ignore")
-            record, job, items = service.import_text(
+            record, job, items, labels = service.import_text(
                 dataset_id,
                 text=text,
                 source_type=inferred_source,
                 filename=filename,
+                column_mapping=column_mapping,
             )
-            return ImportResponse(import_record=record, job=job, created_items=items)
+            return ImportResponse(import_record=record, job=job, created_items=items, created_labels=labels)
 
         if manual_text is not None:
-            record, job, items = service.import_text(
+            record, job, items, labels = service.import_text(
                 dataset_id,
                 text=str(manual_text),
                 source_type=source_type or SourceType.TEXT,
                 filename=None,
+                column_mapping=column_mapping,
             )
-            return ImportResponse(import_record=record, job=job, created_items=items)
+            return ImportResponse(import_record=record, job=job, created_items=items, created_labels=labels)
 
     payload = await request.json()
     text = str(payload.get("text", ""))
     payload_source = SourceType(payload.get("source_type", SourceType.TEXT))
     filename = payload.get("filename")
+    column_mapping = _column_mapping(payload.get("column_mapping") or payload.get("mapping"))
     if payload_source in {SourceType.PDF, SourceType.IMAGE} and payload.get("data"):
         data = str(payload["data"]).encode()
         record, job = service.import_asset(
@@ -70,8 +76,14 @@ async def create_import(
             content_type=None,
         )
         return ImportResponse(import_record=record, job=job)
-    record, job, items = service.import_text(dataset_id, text=text, source_type=payload_source, filename=filename)
-    return ImportResponse(import_record=record, job=job, created_items=items)
+    record, job, items, labels = service.import_text(
+        dataset_id,
+        text=text,
+        source_type=payload_source,
+        filename=filename,
+        column_mapping=column_mapping,
+    )
+    return ImportResponse(import_record=record, job=job, created_items=items, created_labels=labels)
 
 
 @router.post("/datasets/{dataset_id}/ocr")
@@ -82,3 +94,17 @@ def create_ocr(
 ) -> dict:
     suggestions, job = service.create_ocr_suggestions(dataset_id, import_id=payload.import_id)
     return {"suggestions": suggestions, "job": job}
+
+
+def _column_mapping(value: object) -> dict:
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}

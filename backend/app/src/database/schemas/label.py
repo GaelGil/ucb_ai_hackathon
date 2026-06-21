@@ -1,30 +1,40 @@
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
-from app.src.database.models.label import LabelType
+from app.src.database.models.label import LabelSource, LabelType
 
 
 class LabelCreate(BaseModel):
-    name: str
+    dataset_id: str
+    data_row_id: str
+    import_id: str | None = None
+    ai_suggestion_id: str | None = None
     type: LabelType
-    value: str
-    data_id: int
-    dataset_id: int | None = None
+    name: str | None = None
+    value: dict[str, Any]
+    source: LabelSource = LabelSource.human
+    original_column_name: str | None = None
 
 
 class LabelUpdate(BaseModel):
-    name: str | None = None
     type: LabelType | None = None
-    value: str | None = None
-    data_id: int | None = None
-    dataset_id: int | None = None
+    name: str | None = None
+    value: dict[str, Any] | None = None
+    source: LabelSource | None = None
+    original_column_name: str | None = None
 
 
 class LabelRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    name: str
+    id: str
+    dataset_id: str
+    data_row_id: str
+    import_id: str | None
+    ai_suggestion_id: str | None
     type: LabelType
-    value: str
-    data_id: int
-    dataset_id: int | None
+    name: str | None
+    value: dict[str, Any]
+    source: LabelSource
+    original_column_name: str | None

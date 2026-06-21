@@ -13,11 +13,11 @@ class LabelRepository:
         self.session.refresh(label)
         return label
 
-    def get(self, label_id: int) -> Label | None:
+    def get(self, label_id: str) -> Label | None:
         return self.session.get(Label, label_id)
 
-    def list_by_data(self, data_id: int) -> list[Label]:
-        statement = select(Label).where(Label.data_id == data_id)
+    def list_by_data(self, data_row_id: str) -> list[Label]:
+        statement = select(Label).where(Label.data_row_id == data_row_id)
         return list(self.session.exec(statement).all())
 
     def delete(self, label: Label) -> None:

@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.src.api.dependencies import get_labels_service
 from app.src.api.labels.service import LabelsService
 from app.src.models import (
+    LabelSource,
+    LabelsResponse,
     PosSuggestionRequest,
     PosTrainingRequest,
     PosTrainingResponse,
@@ -40,6 +42,17 @@ def list_suggestions(
     return SuggestionsResponse(suggestions=service.list_suggestions(dataset_id, type, status, limit))
 
 
+@router.get("/datasets/{dataset_id}/labels", response_model=LabelsResponse)
+def list_labels(
+    dataset_id: str,
+    type: SuggestionType | None = None,
+    source: LabelSource | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    service: LabelsService = Depends(get_labels_service),
+) -> LabelsResponse:
+    return LabelsResponse(labels=service.list_labels(dataset_id, type, source, limit))
+
+
 @router.patch("/suggestions/{suggestion_id}", response_model=Suggestion)
 def review_suggestion(
     suggestion_id: str,
@@ -47,7 +60,7 @@ def review_suggestion(
     service: LabelsService = Depends(get_labels_service),
 ) -> Suggestion:
     if payload.action == SuggestionStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Review action must be approve, deny, or edit.")
+        raise HTTPException(status_code=400, detail="Review action must be accepted, denied, or updated.")
     return service.review_suggestion(suggestion_id, payload)
 
 

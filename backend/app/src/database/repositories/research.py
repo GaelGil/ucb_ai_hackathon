@@ -13,7 +13,7 @@ class ResearchRepository:
         self.session.refresh(research)
         return research
 
-    def get(self, research_id: int) -> Research | None:
+    def get(self, research_id: str) -> Research | None:
         return self.session.get(Research, research_id)
 
     def _list(self, offset: int = 0, limit: int = 100) -> list[Research]:

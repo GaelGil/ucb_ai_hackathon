@@ -13,11 +13,11 @@ class DataRepository:
         self.session.refresh(data)
         return data
 
-    def get(self, data_id: int) -> Data | None:
-        return self.session.get(Data, data_id)
+    def get(self, data_row_id: str) -> Data | None:
+        return self.session.get(Data, data_row_id)
 
-    def list_by_language(self, language_id: int) -> list[Data]:
-        statement = select(Data).where(Data.language_id == language_id)
+    def list_by_dataset(self, dataset_id: str) -> list[Data]:
+        statement = select(Data).where(Data.dataset_id == dataset_id)
         return list(self.session.exec(statement).all())
 
     def _list(self, offset: int = 0, limit: int = 100) -> list[Data]:

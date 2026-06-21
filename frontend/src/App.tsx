@@ -158,7 +158,35 @@ type Toast = {
 
 type DraftMap = Record<string, TokenSuggestion[]>;
 type TextDraftMap = Record<string, string>;
-type WorkspaceTab = "all" | "pos" | "ocr" | "upload";
+type WorkspaceTab = "pos" | "ocr" | "translate" | "upload" | "models";
+
+type TranslationRow = {
+  id: string;
+  text: string;
+  translation: string;
+  suggestions: string[];
+};
+
+const TRANSLATION_ROWS: TranslationRow[] = [
+  {
+    id: "translation-flowers",
+    text: "muchas flores son blancas",
+    translation: "miak xochitl istak",
+    suggestions: ["Confirm plural agreement", "Review color adjective placement"],
+  },
+  {
+    id: "translation-water",
+    text: "el agua corre rapido",
+    translation: "atl motlaloa niman",
+    suggestions: ["Check tense marker", "Verify natural word order"],
+  },
+  {
+    id: "translation-family",
+    text: "mi familia habla nahuatl",
+    translation: "nochan tlatoa nahuatl",
+    suggestions: ["Validate possessive form", "Flag dialect-specific vocabulary"],
+  },
+];
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -223,7 +251,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("all");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("pos");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [addLanguageFormOpen, setAddLanguageFormOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
@@ -490,7 +518,7 @@ export function App() {
   }
 
   function handleTabChange(value: string | null) {
-    if (value === "all" || value === "pos" || value === "ocr" || value === "upload") {
+    if (value === "pos" || value === "ocr" || value === "translate" || value === "upload" || value === "models") {
       setActiveTab(value);
     }
   }
@@ -706,6 +734,20 @@ export function App() {
           {!sidebarCollapsed ? (
             <>
               <Divider />
+              <Group justify="space-between" wrap="nowrap">
+                <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                  New Language
+                </Text>
+                <Button
+                  color="gray"
+                  onClick={() => setAddLanguageFormOpen(current => !current)}
+                  size="compact-xs"
+                  type="button"
+                  variant="subtle"
+                >
+                  {addLanguageFormOpen ? "Hide Form" : "Show Form"}
+                </Button>
+              </Group>
               {addLanguageFormOpen ? (
                 <Box
                   component="form"
@@ -715,20 +757,6 @@ export function App() {
                   }}
                 >
                   <Stack gap="xs">
-                    <Group justify="space-between" wrap="nowrap">
-                      <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-                        New Language
-                      </Text>
-                      <Button
-                        color="gray"
-                        onClick={() => setAddLanguageFormOpen(false)}
-                        size="compact-xs"
-                        type="button"
-                        variant="subtle"
-                      >
-                        Hide Form
-                      </Button>
-                    </Group>
                     <TextInput
                       autoComplete="off"
                       label="Dataset"
@@ -770,17 +798,7 @@ export function App() {
                     </Button>
                   </Stack>
                 </Box>
-              ) : (
-                <Button
-                  color="green"
-                  fullWidth
-                  leftSection={<TbPlus aria-hidden="true" size={16} />}
-                  onClick={() => setAddLanguageFormOpen(true)}
-                  variant="light"
-                >
-                  Add Language
-                </Button>
-              )}
+              ) : null}
             </>
           ) : null}
         </Stack>
@@ -808,120 +826,48 @@ export function App() {
 
             <Tabs value={activeTab} onChange={handleTabChange} radius="md" variant="pills">
               <Tabs.List>
-                <Tabs.Tab leftSection={<TbDatabase aria-hidden="true" size={16} />} value="all">
-                  All
-                </Tabs.Tab>
                 <Tabs.Tab leftSection={<TbTags aria-hidden="true" size={16} />} value="pos">
                   POS
                 </Tabs.Tab>
                 <Tabs.Tab leftSection={<TbWand aria-hidden="true" size={16} />} value="ocr">
                   OCR
                 </Tabs.Tab>
+                <Tabs.Tab leftSection={<TbFileText aria-hidden="true" size={16} />} value="translate">
+                  Translate
+                </Tabs.Tab>
                 <Tabs.Tab leftSection={<TbUpload aria-hidden="true" size={16} />} value="upload">
                   Upload
                 </Tabs.Tab>
+                <Tabs.Tab leftSection={<TbDatabase aria-hidden="true" size={16} />} value="models">
+                  Models
+                </Tabs.Tab>
               </Tabs.List>
 
-              <Tabs.Panel value="all" pt="md">
-                <Stack gap="md">
-                  <SimpleGrid cols={{ base: 1, md: 4 }} spacing="md">
-                    <MetricCard label="Research" value={dashboard?.research ? "Cached" : "Not Run"} tone="violet" />
-                    <MetricCard label="Imports" value={`${dashboard?.imports.length ?? 0}`} tone="green" />
-                    <MetricCard label="OCR Review" value={`${pendingOcrCount} Pending`} tone="grape" />
-                    <MetricCard label="POS Model" value={dashboard?.pos_model.model_name ?? "Demo Trigger"} tone="lime" />
-                  </SimpleGrid>
-                  <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                    <PaperPanel title="Imports" eyebrow="Dataset sources">
-                      <ImportsTable imports={dashboard?.imports ?? []} />
-                    </PaperPanel>
-                    <PaperPanel title="Workspace Status" eyebrow="All activity">
-                      <Stack gap="sm">
-                        <Group gap="xs">
-                          <Badge color="violet" radius="sm" variant="light">
-                            {dashboard?.item_count ?? 0} text items
-                          </Badge>
-                          <Badge color="yellow" radius="sm" variant="light">
-                            {pendingPosCount} POS pending
-                          </Badge>
-                          <Badge color="grape" radius="sm" variant="light">
-                            {pendingOcrCount} OCR pending
-                          </Badge>
-                          <Badge color="green" radius="sm" variant="light">
-                            {acceptedPosCount} accepted
-                          </Badge>
-                        </Group>
-                        <Text c="dimmed" size="sm">
-                          Research is {dashboard?.research ? "cached" : "not cached"} and the POS model is{" "}
-                          {dashboard?.pos_model.status.replaceAll("_", " ") ?? "not started"}.
-                        </Text>
-                      </Stack>
-                    </PaperPanel>
-                  </SimpleGrid>
-                  <JobsPanel jobs={jobs} />
-                </Stack>
-              </Tabs.Panel>
-
               <Tabs.Panel value="pos" pt="md">
-                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                  <ResearchPanel
-                    dashboard={dashboard}
-                    working={working}
-                    onResearch={() => void runResearch(false)}
-                    onRefreshResearch={() => void runResearch(true)}
-                  />
-                  <PosBatchPanel
-                    suggestions={suggestions}
-                    tokenDrafts={tokenDrafts}
-                    working={working}
-                    onGenerate={() => void generatePosSuggestions()}
-                    onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
-                    onTokenChange={updateTokenDraft}
-                  />
-                  <PaperPanel title="Dataset POS Tagger" eyebrow="Training trigger">
-                    <Stack gap="sm">
-                      <Group gap="xs">
-                        <Badge color="green" radius="sm" variant="light">
-                          {acceptedPosCount} accepted examples
-                        </Badge>
-                        <Badge color={statusColor(dashboard?.pos_model.status ?? "")} radius="sm" variant="dot">
-                          {dashboard?.pos_model.status.replaceAll("_", " ") ?? "not started"}
-                        </Badge>
-                      </Group>
-                      <Text c="dimmed" size="sm">
-                        The demo trigger allows model creation before the production threshold is reached. Accepted
-                        reviewer examples remain the training signal.
-                      </Text>
-                      <Button color="green" disabled={working} onClick={() => void trainPosModel()}>
-                        Trigger POS Training
-                      </Button>
-                      {dashboard?.pos_model.model_name ? (
-                        <Text size="sm">Model: {dashboard.pos_model.model_name}</Text>
-                      ) : null}
-                    </Stack>
-                  </PaperPanel>
-                </SimpleGrid>
+                <PosSuggestionsTable
+                  suggestions={suggestions}
+                  tokenDrafts={tokenDrafts}
+                  working={working}
+                  onGenerate={() => void generatePosSuggestions()}
+                  onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
+                  onTokenChange={updateTokenDraft}
+                />
               </Tabs.Panel>
 
               <Tabs.Panel value="ocr" pt="md">
-                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                  <PaperPanel title="OCR Queue" eyebrow="PDF and image extraction">
-                    <Stack gap="sm">
-                      <Text c="dimmed" size="sm">
-                        Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
-                      </Text>
-                      <Button color="green" disabled={working || !latestAssetImport} onClick={() => void runOcr()}>
-                        Run OCR
-                      </Button>
-                    </Stack>
-                  </PaperPanel>
-                  <OcrReviewPanel
-                    suggestions={ocrSuggestions}
-                    drafts={ocrDrafts}
-                    working={working}
-                    onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
-                    onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
-                  />
-                </SimpleGrid>
+                <OcrSuggestionsTable
+                  latestAssetImport={latestAssetImport}
+                  suggestions={ocrSuggestions}
+                  drafts={ocrDrafts}
+                  working={working}
+                  onRunOcr={() => void runOcr()}
+                  onDraftChange={(id, value) => setOcrDrafts(previous => ({ ...previous, [id]: value }))}
+                  onReview={(suggestion, action) => void reviewSuggestion(suggestion, action)}
+                />
+              </Tabs.Panel>
+
+              <Tabs.Panel value="translate" pt="md">
+                <TranslationTable rows={TRANSLATION_ROWS} />
               </Tabs.Panel>
 
               <Tabs.Panel value="upload" pt="md">
@@ -984,6 +930,15 @@ export function App() {
                     </Stack>
                   </PaperPanel>
                 </SimpleGrid>
+              </Tabs.Panel>
+
+              <Tabs.Panel value="models" pt="md">
+                <ModelsPanel
+                  acceptedPosCount={acceptedPosCount}
+                  posModel={dashboard?.pos_model ?? null}
+                  working={working}
+                  onTrainPos={() => void trainPosModel()}
+                />
               </Tabs.Panel>
             </Tabs>
           </Stack>
@@ -1093,7 +1048,37 @@ function ResearchPanel({
   );
 }
 
-function PosBatchPanel({
+function SuggestionActions({
+  suggestion,
+  working,
+  onReview,
+}: {
+  suggestion: Suggestion;
+  working: boolean;
+  onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
+}) {
+  return (
+    <Group gap="xs">
+      <Button color="green" disabled={working} onClick={() => onReview(suggestion, "approved")} size="compact-xs">
+        Approve
+      </Button>
+      <Button
+        color="violet"
+        disabled={working}
+        onClick={() => onReview(suggestion, "edited")}
+        size="compact-xs"
+        variant="light"
+      >
+        Save Edit
+      </Button>
+      <Button color="red" disabled={working} onClick={() => onReview(suggestion, "denied")} size="compact-xs" variant="light">
+        Deny
+      </Button>
+    </Group>
+  );
+}
+
+function PosSuggestionsTable({
   suggestions,
   tokenDrafts,
   working,
@@ -1108,12 +1093,91 @@ function PosBatchPanel({
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
   onTokenChange: (suggestionId: string, tokenIndex: number, tag: string | null) => void;
 }) {
+  const columns = useMemo(() => {
+    const columnHelper = createColumnHelper<Suggestion>();
+
+    return [
+      columnHelper.accessor("original_text", {
+        header: "Text",
+        cell: info => (
+          <Box maw={360}>
+            <Text fw={700} size="sm">
+              {info.getValue()}
+            </Text>
+            <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
+              {info.row.original.status}
+            </Badge>
+          </Box>
+        ),
+      }),
+      columnHelper.display({
+        id: "tags",
+        header: "Tags",
+        cell: info => {
+          const suggestion = info.row.original;
+          const tokens = tokenDrafts[suggestion.id] ?? suggestion.tokens;
+
+          return (
+            <Stack gap={6} miw={260}>
+              {tokens.map(token => (
+                <Group key={`${suggestion.id}-${token.index}`} gap={6} wrap="nowrap">
+                  <Badge color="gray" radius="sm" variant="light">
+                    {token.token}
+                  </Badge>
+                  <Select
+                    aria-label={`UPOS tag for ${token.token}`}
+                    data={UPOS_TAGS.map(tag => ({ value: tag, label: tag }))}
+                    name={`upos-${suggestion.id}-${token.index}`}
+                    onChange={value => onTokenChange(suggestion.id, token.index, value)}
+                    size="xs"
+                    value={token.suggested_pos}
+                    w={96}
+                  />
+                </Group>
+              ))}
+            </Stack>
+          );
+        },
+      }),
+      columnHelper.display({
+        id: "suggestions",
+        header: "Suggestions",
+        cell: info => {
+          const suggestion = info.row.original;
+
+          return (
+            <Stack gap="xs" miw={260}>
+              <Group gap="xs">
+                <Badge color="grape" radius="sm" variant="light">
+                  {formatPercent(suggestion.confidence)}
+                </Badge>
+                <Text c="dimmed" size="xs">
+                  AI suggestion
+                </Text>
+              </Group>
+              <Text c="dimmed" size="xs">
+                {suggestion.rationale || "Review the suggested UPOS tags."}
+              </Text>
+              <SuggestionActions suggestion={suggestion} working={working} onReview={onReview} />
+            </Stack>
+          );
+        },
+      }),
+    ];
+  }, [onReview, onTokenChange, tokenDrafts, working]);
+
+  const table = useReactTable({
+    columns,
+    data: suggestions,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
   return (
-    <PaperPanel title="Five-at-a-time review" eyebrow="UPOS suggestions">
+    <PaperPanel title="POS Tagging" eyebrow="Text, tags, suggestions">
       <Stack gap="md">
         <Group justify="space-between">
           <Text c="dimmed" size="sm">
-            Pending batch size: {suggestions.length}
+            Pending rows: {suggestions.length}
           </Text>
           <Button disabled={working} onClick={onGenerate}>
             Generate 5 Suggestions
@@ -1124,81 +1188,32 @@ function PosBatchPanel({
             No pending POS suggestions. Generate a batch after uploading text.
           </Text>
         ) : (
-          suggestions.map(suggestion => (
-            <Card
-              key={suggestion.id}
-              withBorder
-              radius="md"
-              p="md"
-              style={{ background: UI.panelSoft, borderColor: UI.border }}
-            >
-              <Stack gap="sm">
-                <Group justify="space-between" align="flex-start">
-                  <Box>
-                    <Text fw={750}>{suggestion.original_text}</Text>
-                    <Text c="dimmed" size="xs">
-                      Confidence {formatPercent(suggestion.confidence)}
-                    </Text>
-                  </Box>
-                  <Badge color={statusColor(suggestion.status)} radius="sm" variant="dot">
-                    {suggestion.status}
-                  </Badge>
-                </Group>
-                <Table miw={520} withTableBorder={false}>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Token</Table.Th>
-                      <Table.Th>UPOS</Table.Th>
-                      <Table.Th>Reason</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {(tokenDrafts[suggestion.id] ?? suggestion.tokens).map(token => (
-                      <Table.Tr key={`${suggestion.id}-${token.index}`}>
-                        <Table.Td>
-                          <Text fw={650} size="sm">
-                            {token.token}
-                          </Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Select
-                            aria-label={`UPOS tag for ${token.token}`}
-                            data={UPOS_TAGS.map(tag => ({ value: tag, label: tag }))}
-                            name={`upos-${suggestion.id}-${token.index}`}
-                            size="xs"
-                            value={token.suggested_pos}
-                            onChange={value => onTokenChange(suggestion.id, token.index, value)}
-                          />
-                        </Table.Td>
-                        <Table.Td>
-                          <Text c="dimmed" size="xs">
-                            {token.rationale}
-                          </Text>
-                        </Table.Td>
-                      </Table.Tr>
+          <ScrollArea type="auto">
+            <Table miw={920} highlightOnHover>
+              <Table.Thead>
+                {table.getHeaderGroups().map(headerGroup => (
+                  <Table.Tr key={headerGroup.id}>
+                    {headerGroup.headers.map(header => (
+                      <Table.Th key={header.id}>
+                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                      </Table.Th>
                     ))}
-                  </Table.Tbody>
-                </Table>
-                <Group gap="xs">
-                  <Button color="green" disabled={working} onClick={() => onReview(suggestion, "approved")} size="xs">
-                    Approve
-                  </Button>
-                  <Button
-                    color="violet"
-                    disabled={working}
-                    onClick={() => onReview(suggestion, "edited")}
-                    size="xs"
-                    variant="light"
-                  >
-                    Save Edit
-                  </Button>
-                  <Button color="red" disabled={working} onClick={() => onReview(suggestion, "denied")} size="xs" variant="light">
-                    Deny
-                  </Button>
-                </Group>
-              </Stack>
-            </Card>
-          ))
+                  </Table.Tr>
+                ))}
+              </Table.Thead>
+              <Table.Tbody>
+                {table.getRowModel().rows.map(row => (
+                  <Table.Tr key={row.id}>
+                    {row.getVisibleCells().map(cell => (
+                      <Table.Td key={cell.id} style={{ verticalAlign: "top" }}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </Table.Td>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </ScrollArea>
         )}
       </Stack>
     </PaperPanel>
@@ -1288,76 +1303,294 @@ function ImportsTable({ imports }: { imports: ImportRecord[] }) {
   );
 }
 
-function OcrReviewPanel({
+function OcrSuggestionsTable({
+  latestAssetImport,
   suggestions,
   drafts,
   working,
+  onRunOcr,
   onDraftChange,
   onReview,
 }: {
+  latestAssetImport: ImportRecord | null;
   suggestions: Suggestion[];
   drafts: TextDraftMap;
   working: boolean;
+  onRunOcr: () => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
 }) {
+  const columns = useMemo(() => {
+    const columnHelper = createColumnHelper<Suggestion>();
+
+    return [
+      columnHelper.accessor("original_text", {
+        header: "Image/PDF",
+        cell: info => (
+          <Box maw={260}>
+            <Text fw={700} size="sm" truncate>
+              {info.getValue()}
+            </Text>
+            <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
+              {info.row.original.status}
+            </Badge>
+          </Box>
+        ),
+      }),
+      columnHelper.display({
+        id: "text_on_screen",
+        header: "Text on Screen",
+        cell: info => {
+          const suggestion = info.row.original;
+
+          return (
+            <Textarea
+              aria-label={`OCR text for ${suggestion.original_text}`}
+              autoComplete="off"
+              autosize
+              minRows={3}
+              name={`ocr-${suggestion.id}`}
+              onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
+              value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
+              w={320}
+            />
+          );
+        },
+      }),
+      columnHelper.display({
+        id: "suggestions",
+        header: "Suggestions",
+        cell: info => {
+          const suggestion = info.row.original;
+
+          return (
+            <Stack gap="xs" miw={260}>
+              <Badge color="grape" radius="sm" variant="light" w="fit-content">
+                {formatPercent(suggestion.confidence)}
+              </Badge>
+              <Text c="dimmed" size="xs">
+                {suggestion.rationale || "Review the extracted screen text."}
+              </Text>
+              <SuggestionActions suggestion={suggestion} working={working} onReview={onReview} />
+            </Stack>
+          );
+        },
+      }),
+    ];
+  }, [drafts, onDraftChange, onReview, working]);
+
+  const table = useReactTable({
+    columns,
+    data: suggestions,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
   return (
-    <PaperPanel title="OCR suggestions" eyebrow="Human validation">
+    <PaperPanel title="OCR" eyebrow="Image/PDF, text on screen, suggestions">
       <Stack gap="md">
+        <Group justify="space-between">
+          <Text c="dimmed" size="sm">
+            Latest asset import: {latestAssetImport?.filename ?? "No PDF/image import yet"}
+          </Text>
+          <Button color="green" disabled={working || !latestAssetImport} onClick={onRunOcr}>
+            Run OCR
+          </Button>
+        </Group>
         {suggestions.length === 0 ? (
           <Text c="dimmed" size="sm">
             No pending OCR suggestions.
           </Text>
         ) : (
-          suggestions.map(suggestion => (
-            <Card
-              key={suggestion.id}
-              withBorder
-              radius="md"
-              p="md"
-              style={{ background: UI.panelSoft, borderColor: UI.border }}
-            >
-              <Stack gap="sm">
-                <Group justify="space-between">
-                  <Text fw={750}>{suggestion.original_text}</Text>
-                  <Badge color="grape" radius="sm" variant="light">
-                    {formatPercent(suggestion.confidence)}
-                  </Badge>
-                </Group>
-                <Textarea
-                  aria-label={`OCR text for ${suggestion.original_text}`}
-                  autoComplete="off"
-                  minRows={5}
-                  name={`ocr-${suggestion.id}`}
-                  value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
-                  onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
-                />
-                <Text c="dimmed" size="xs">
-                  {suggestion.rationale}
-                </Text>
-                <Group gap="xs">
-                  <Button color="green" disabled={working} onClick={() => onReview(suggestion, "approved")} size="xs">
-                    Approve
-                  </Button>
-                  <Button
-                    color="violet"
-                    disabled={working}
-                    onClick={() => onReview(suggestion, "edited")}
-                    size="xs"
-                    variant="light"
-                  >
-                    Save Edit
-                  </Button>
-                  <Button color="red" disabled={working} onClick={() => onReview(suggestion, "denied")} size="xs" variant="light">
-                    Deny
-                  </Button>
-                </Group>
-              </Stack>
-            </Card>
-          ))
+          <ScrollArea type="auto">
+            <Table miw={920} highlightOnHover>
+              <Table.Thead>
+                {table.getHeaderGroups().map(headerGroup => (
+                  <Table.Tr key={headerGroup.id}>
+                    {headerGroup.headers.map(header => (
+                      <Table.Th key={header.id}>
+                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                      </Table.Th>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Thead>
+              <Table.Tbody>
+                {table.getRowModel().rows.map(row => (
+                  <Table.Tr key={row.id}>
+                    {row.getVisibleCells().map(cell => (
+                      <Table.Td key={cell.id} style={{ verticalAlign: "top" }}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </Table.Td>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </ScrollArea>
         )}
       </Stack>
     </PaperPanel>
+  );
+}
+
+function TranslationTable({ rows }: { rows: TranslationRow[] }) {
+  const columns = useMemo(() => {
+    const columnHelper = createColumnHelper<TranslationRow>();
+
+    return [
+      columnHelper.accessor("text", {
+        header: "Text",
+        cell: info => (
+          <Text fw={700} size="sm">
+            {info.getValue()}
+          </Text>
+        ),
+      }),
+      columnHelper.accessor("translation", {
+        header: "Translation",
+        cell: info => (
+          <Text size="sm">
+            {info.getValue()}
+          </Text>
+        ),
+      }),
+      columnHelper.accessor("suggestions", {
+        header: "Suggestions",
+        cell: info => (
+          <Group gap="xs">
+            {info.getValue().map(suggestion => (
+              <Badge key={suggestion} color="violet" radius="sm" variant="light">
+                {suggestion}
+              </Badge>
+            ))}
+          </Group>
+        ),
+      }),
+    ];
+  }, []);
+
+  const table = useReactTable({
+    columns,
+    data: rows,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
+  return (
+    <PaperPanel title="Translate" eyebrow="Text, translation, suggestions">
+      <ScrollArea type="auto">
+        <Table miw={780} highlightOnHover>
+          <Table.Thead>
+            {table.getHeaderGroups().map(headerGroup => (
+              <Table.Tr key={headerGroup.id}>
+                {headerGroup.headers.map(header => (
+                  <Table.Th key={header.id}>
+                    {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                  </Table.Th>
+                ))}
+              </Table.Tr>
+            ))}
+          </Table.Thead>
+          <Table.Tbody>
+            {table.getRowModel().rows.map(row => (
+              <Table.Tr key={row.id}>
+                {row.getVisibleCells().map(cell => (
+                  <Table.Td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</Table.Td>
+                ))}
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </ScrollArea>
+    </PaperPanel>
+  );
+}
+
+function ModelsPanel({
+  acceptedPosCount,
+  posModel,
+  working,
+  onTrainPos,
+}: {
+  acceptedPosCount: number;
+  posModel: PosModel | null;
+  working: boolean;
+  onTrainPos: () => void;
+}) {
+  return (
+    <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
+      <ModelTrainingCard
+        actionLabel="Train OCR Model"
+        description="Tune OCR extraction for PDFs and image scans in this language workspace."
+        disabled
+        status="Needs document examples"
+        title="OCR"
+        tone="grape"
+      />
+      <ModelTrainingCard
+        actionLabel="Train Translation Model"
+        description="Train a translation model from aligned text, corrections, and reviewer suggestions."
+        disabled
+        status="Dataset alignment needed"
+        title="Translation"
+        tone="violet"
+      />
+      <ModelTrainingCard
+        actionLabel="Train POS Tagger"
+        description={`${acceptedPosCount} accepted examples are ready to train the tagger.`}
+        disabled={working}
+        onAction={onTrainPos}
+        status={posModel?.status.replaceAll("_", " ") ?? "not started"}
+        title="POS Tagging"
+        tone="green"
+      />
+    </SimpleGrid>
+  );
+}
+
+function ModelTrainingCard({
+  actionLabel,
+  description,
+  disabled,
+  onAction,
+  status,
+  title,
+  tone,
+}: {
+  actionLabel: string;
+  description: string;
+  disabled?: boolean;
+  onAction?: () => void;
+  status: string;
+  title: string;
+  tone: string;
+}) {
+  return (
+    <Card withBorder radius="md" p="lg" style={{ background: UI.panel, borderColor: UI.border }}>
+      <Stack gap="md" h="100%">
+        <Group justify="space-between" align="flex-start" wrap="nowrap">
+          <Box>
+            <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+              Model
+            </Text>
+            <Title order={3} size="h3">
+              {title}
+            </Title>
+          </Box>
+          <ThemeIcon color={tone} radius="md" variant="light">
+            {title.slice(0, 2)}
+          </ThemeIcon>
+        </Group>
+        <Text c="dimmed" size="sm">
+          {description}
+        </Text>
+        <Badge color={tone} radius="sm" variant="light" w="fit-content">
+          {status}
+        </Badge>
+        <Button color={tone} disabled={disabled} mt="auto" onClick={onAction} variant="light">
+          {actionLabel}
+        </Button>
+      </Stack>
+    </Card>
   );
 }
 

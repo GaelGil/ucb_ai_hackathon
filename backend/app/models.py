@@ -27,13 +27,27 @@ class SourceType(StrEnum):
 class SuggestionType(StrEnum):
     POS = "pos"
     OCR = "ocr"
+    TRANSLATION = "translation"
+    EMOTION = "emotion"
+    INTENTION = "intention"
+    TEXT = "text"
+    CUSTOM = "custom"
 
 
 class SuggestionStatus(StrEnum):
     PENDING = "pending"
-    APPROVED = "approved"
+    ACCEPTED = "accepted"
     DENIED = "denied"
+    UPDATED = "updated"
+    APPROVED = "approved"
     EDITED = "edited"
+
+
+class LabelSource(StrEnum):
+    CSV_IMPORT = "csv_import"
+    HUMAN = "human"
+    AI_ACCEPTED = "ai_accepted"
+    AI_UPDATED = "ai_updated"
 
 
 class JobStatus(StrEnum):
@@ -93,7 +107,9 @@ class ImportRecord(BaseModel):
     filename: str | None = None
     item_count: int = 0
     asset_count: int = 0
+    label_count: int = 0
     status: str = "ready"
+    column_mapping: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -114,6 +130,20 @@ class UploadedAsset(BaseModel):
     filename: str
     content_type: str | None = None
     data: bytes
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class Label(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("label"))
+    dataset_id: str
+    data_row_id: str
+    import_id: str | None = None
+    ai_suggestion_id: str | None = None
+    type: SuggestionType
+    name: str | None = None
+    value: dict[str, Any] = Field(default_factory=dict)
+    source: LabelSource = LabelSource.HUMAN
+    original_column_name: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -226,6 +256,7 @@ class ImportResponse(BaseModel):
     import_record: ImportRecord
     job: Job
     created_items: list[TextItem] = Field(default_factory=list)
+    created_labels: list[Label] = Field(default_factory=list)
 
 
 class JobResponse(BaseModel):
@@ -234,6 +265,10 @@ class JobResponse(BaseModel):
 
 class SuggestionsResponse(BaseModel):
     suggestions: list[Suggestion]
+
+
+class LabelsResponse(BaseModel):
+    labels: list[Label]
 
 
 class ResearchResponse(BaseModel):

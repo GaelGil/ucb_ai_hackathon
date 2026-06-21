@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import enum
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -13,6 +11,7 @@ if TYPE_CHECKING:
     from app.src.database.models.data import DataRow
     from app.src.database.models.dataset import Dataset
     from app.src.database.models.import_record import ImportRecord
+    from app.src.database.models.suggestion import AiSuggestion
 
 
 class LabelType(str, enum.Enum):
@@ -50,4 +49,5 @@ class Label(SQLModel, table=True):
 
     dataset: "Dataset" = Relationship(back_populates="labels")
     data_row: "DataRow" = Relationship(back_populates="labels")
-    import_record: "ImportRecord | None" = Relationship(back_populates="labels")
+    import_record: "ImportRecord" = Relationship(back_populates="labels")
+    ai_suggestion: "AiSuggestion" = Relationship(back_populates="labels")

@@ -13,10 +13,10 @@ class DatasetRepository:
         self.session.refresh(dataset)
         return dataset
 
-    def get(self, dataset_id: int) -> Dataset | None:
+    def get(self, dataset_id: str) -> Dataset | None:
         return self.session.get(Dataset, dataset_id)
 
-    def list_by_language(self, language_id: int) -> list[Dataset]:
+    def list_by_language(self, language_id: str) -> list[Dataset]:
         statement = select(Dataset).where(Dataset.language_id == language_id)
         return list(self.session.exec(statement).all())
 

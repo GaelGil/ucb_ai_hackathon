@@ -1,27 +1,42 @@
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
-from app.src.database.models.data import DataType
+from app.src.database.models.data import DataSourceType
 
 
 class DataCreate(BaseModel):
-    name: str
-    type: DataType
-    language_id: int
-    dataset_id: int | None = None
+    dataset_id: str
+    import_id: str | None = None
+    row_index: int = 0
+    source_type: DataSourceType
+    text_content: str | None = None
+    storage_bucket: str | None = None
+    storage_path: str | None = None
+    page_number: int | None = None
+    row_metadata: dict[str, Any] = {}
 
 
 class DataUpdate(BaseModel):
-    name: str | None = None
-    type: DataType | None = None
-    language_id: int | None = None
-    dataset_id: int | None = None
+    row_index: int | None = None
+    source_type: DataSourceType | None = None
+    text_content: str | None = None
+    storage_bucket: str | None = None
+    storage_path: str | None = None
+    page_number: int | None = None
+    row_metadata: dict[str, Any] | None = None
 
 
 class DataRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    name: str
-    type: DataType
-    language_id: int
-    dataset_id: int | None
+    id: str
+    dataset_id: str
+    import_id: str | None
+    row_index: int
+    source_type: DataSourceType
+    text_content: str | None
+    storage_bucket: str | None
+    storage_path: str | None
+    page_number: int | None
+    row_metadata: dict[str, Any]

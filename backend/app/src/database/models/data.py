@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import enum
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -19,6 +17,7 @@ if TYPE_CHECKING:
 class DataSourceType(str, enum.Enum):
     text = "text"
     csv = "csv"
+    txt = "txt"
     pdf = "pdf"
     image = "image"
 
@@ -40,7 +39,7 @@ class DataRow(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=now_utc, sa_column=Column(DateTime(timezone=True), nullable=False))
 
     dataset: "Dataset" = Relationship(back_populates="data_rows")
-    import_record: "ImportRecord | None" = Relationship(back_populates="data_rows")
+    import_record: "ImportRecord" = Relationship(back_populates="data_rows")
     labels: list["Label"] = Relationship(
         back_populates="data_row",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},

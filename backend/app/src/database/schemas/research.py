@@ -1,22 +1,31 @@
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
+
+from app.src.database.models.research import ResearchType
 
 
 class ResearchCreate(BaseModel):
-    type: str
+    language_id: str
+    type: ResearchType
     notes: str | None = None
-    language_id: int | None = None
+    sources: list[dict[str, Any]] = []
+    research_metadata: dict[str, Any] = {}
 
 
 class ResearchUpdate(BaseModel):
-    type: str | None = None
+    type: ResearchType | None = None
     notes: str | None = None
-    language_id: int | None = None
+    sources: list[dict[str, Any]] | None = None
+    research_metadata: dict[str, Any] | None = None
 
 
 class ResearchRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    type: str
+    id: str
+    language_id: str
+    type: ResearchType
     notes: str | None
-    language_id: int | None
+    sources: list[dict[str, Any]]
+    research_metadata: dict[str, Any]

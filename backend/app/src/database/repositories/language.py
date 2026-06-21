@@ -13,7 +13,7 @@ class LanguageRepository:
         self.session.refresh(language)
         return language
 
-    def get(self, language_id: int) -> Language | None:
+    def get(self, language_id: str) -> Language | None:
         return self.session.get(Language, language_id)
 
     def _list(self, offset: int = 0, limit: int = 100) -> list[Language]:
