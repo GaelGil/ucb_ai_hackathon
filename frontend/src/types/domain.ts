@@ -7,6 +7,7 @@ export type ReviewFilter = "all" | "needs_review";
 export type TranslationReviewFilter = "all" | "needs_review";
 export type SuggestionType = "pos" | "ocr" | "translation" | "emotion" | "intention" | "text" | "custom";
 export type SuggestionStatus = "pending" | "accepted" | "denied" | "updated" | "approved" | "edited";
+export type OcrRowStatus = "not_scanned" | "pending_review" | "reviewed";
 export type LabelSource = "csv_import" | "human" | "ai_accepted" | "ai_updated";
 
 export type ProviderWarning = {
@@ -76,6 +77,22 @@ export type AnnotationRow = {
   label: Label | null;
 };
 
+export type OcrRow = {
+  id: string;
+  dataset_id: string;
+  data_row_id: string;
+  import_id: string;
+  filename: string;
+  image_url: string;
+  text: string;
+  status: OcrRowStatus;
+  confidence: number | null;
+  rationale: string;
+  created_at: string;
+  pending_suggestion: Suggestion | null;
+  label: Label | null;
+};
+
 export type Label = {
   id: string;
   dataset_id: string;
@@ -104,6 +121,10 @@ export type SuggestionsResponse = PaginationMeta & {
 
 export type AnnotationRowsResponse = PaginationMeta & {
   rows: AnnotationRow[];
+};
+
+export type OcrRowsResponse = PaginationMeta & {
+  rows: OcrRow[];
 };
 
 export type LabelsResponse = PaginationMeta & {

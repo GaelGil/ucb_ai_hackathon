@@ -97,7 +97,7 @@ class FakeOcrProvider:
     provider = "fake-anthropic"
     model_name = "fake-claude"
 
-    def extract(self, asset):
+    def extract(self, asset, *, language_code=None, language_name=None):
         return "fake extracted text", 0.8, "Fake OCR suggestion."
 
 
@@ -405,6 +405,42 @@ def test_ocr_uses_selected_image_import(client: TestClient) -> None:
     assert response["job"]["metadata"]["provider"] == "fake-anthropic"
     assert len(response["suggestions"]) == 1
     assert response["suggestions"][0]["suggested_text"] == "fake extracted text"
+
+
+def test_ocr_rows_show_blank_pending_and_reviewed_states(client: TestClient) -> None:
+    dataset = client.post(
+        "/datasets",
+        json={"name": "OCR rows", "language_code": "nah", "language_name": "Nahuatl"},
+    ).json()
+    uploaded = client.post(
+        f"/datasets/{dataset['id']}/imports",
+        files={"file": ("scan.png", b"fake image bytes", "image/png")},
+    ).json()
+
+    before = client.get(f"/datasets/{dataset['id']}/ocr-rows").json()
+    assert before["total"] == 1
+    assert before["rows"][0]["filename"] == "scan.png"
+    assert before["rows"][0]["status"] == "not_scanned"
+    assert before["rows"][0]["text"] == ""
+    asset = client.get(before["rows"][0]["image_url"])
+    assert asset.status_code == 200
+    assert asset.content == b"fake image bytes"
+
+    created = client.post(
+        f"/datasets/{dataset['id']}/ocr",
+        json={"import_ids": [uploaded["import_record"]["id"]]},
+    ).json()
+    pending = client.get(f"/datasets/{dataset['id']}/ocr-rows").json()["rows"][0]
+    assert pending["status"] == "pending_review"
+    assert pending["text"] == "fake extracted text"
+    assert pending["pending_suggestion"]["id"] == created["suggestions"][0]["id"]
+
+    client.patch(f"/suggestions/{created['suggestions'][0]['id']}", json={"action": "accepted"})
+    reviewed = client.get(f"/datasets/{dataset['id']}/ocr-rows").json()["rows"][0]
+    assert reviewed["status"] == "reviewed"
+    assert reviewed["text"] == "fake extracted text"
+    assert reviewed["pending_suggestion"] is None
+    assert reviewed["label"]["source"] == "ai_accepted"
 
 
 def test_csv_import_uses_text_column(client: TestClient) -> None:

@@ -219,6 +219,22 @@ class AnnotationRow(BaseModel):
     label: Label | None = None
 
 
+class OcrRow(BaseModel):
+    id: str
+    dataset_id: str
+    data_row_id: str
+    import_id: str
+    filename: str
+    image_url: str
+    text: str = ""
+    status: str = "not_scanned"
+    confidence: float | None = None
+    rationale: str = ""
+    created_at: datetime
+    pending_suggestion: Suggestion | None = None
+    label: Label | None = None
+
+
 class SuggestionReview(BaseModel):
     action: SuggestionStatus
     edited_text: str | None = None
@@ -332,6 +348,13 @@ class LabelsResponse(BaseModel):
 
 class AnnotationRowsResponse(BaseModel):
     rows: list[AnnotationRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class OcrRowsResponse(BaseModel):
+    rows: list[OcrRow]
     total: int
     limit: int
     offset: int

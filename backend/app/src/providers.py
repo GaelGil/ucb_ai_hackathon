@@ -871,7 +871,13 @@ class OCRProvider:
         self.llm = llm or AnthropicClient(self.settings, self.tracer)
         self.model_name = self.llm.model
 
-    def extract(self, asset: UploadedAsset) -> tuple[str, float, str]:
+    def extract(
+        self,
+        asset: UploadedAsset,
+        *,
+        language_code: str | None = None,
+        language_name: str | None = None,
+    ) -> tuple[str, float, str]:
         if asset.source_type.value != "image":
             raise RuntimeError("OCR currently supports image uploads only.")
         if not asset.data:
@@ -880,14 +886,32 @@ class OCRProvider:
         prompt = json.dumps(
             {
                 "filename": asset.filename,
-                "task": "Extract every visible text string from the image. Preserve line breaks when useful.",
+                "language_context": {
+                    "code": language_code or "unknown",
+                    "name": language_name or "unknown",
+                    "purpose": "context only; do not infer, translate, normalize, or correct based on language expectations",
+                },
+                "task": (
+                    "Transcribe visible characters exactly as they appear in the image. Extract characters, words, "
+                    "and line breaks literally; do not translate, correct spelling, normalize to English, modernize, "
+                    "complete missing words, or infer meaning. If the text is low-resource or unfamiliar, copy the "
+                    "closest visible characters rather than replacing them with likely words. Join extracted lines "
+                    "into reviewable text while preserving useful line breaks."
+                ),
+                "instructions": [
+                    "Output only text that is visibly present in the image.",
+                    "Do not translate any text.",
+                    "Do not correct orthography, grammar, accents, casing, or punctuation.",
+                    "Do not guess a word from meaning; transcribe the visible characters.",
+                    "When uncertain, include the closest visible character sequence and explain uncertainty in rationale.",
+                ],
                 "required_json_shape": {
-                    "text": "all extracted text",
+                    "text": "literal visible character transcription",
                     "confidence": 0.8,
-                    "rationale": "brief quality or uncertainty note",
+                    "rationale": "brief quality or uncertainty note; mention unclear characters if any",
                     "evaluation": {
                         "score": 0.0,
-                        "feedback": "judge whether the extracted text is complete and faithful to the image",
+                        "feedback": "judge whether the transcription is literal, complete, and faithful to visible characters",
                     },
                 },
             },
@@ -895,7 +919,10 @@ class OCRProvider:
         )
         completion = self.llm.complete_vision_json(
             task_name="ocr_extract",
-            system="You are an OCR extraction agent. Return only valid JSON.",
+            system=(
+                "You are a literal OCR transcription agent. Extract visible characters exactly. "
+                "Do not translate, correct, normalize, or infer meaning. Return only valid JSON."
+            ),
             prompt=prompt,
             image_bytes=asset.data,
             media_type=media_type,

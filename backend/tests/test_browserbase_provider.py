@@ -4,8 +4,8 @@ import pytest
 import httpx
 
 from app.src.config import Settings
-from app.src.models import Dataset, ResearchArtifact, ResearchSource
-from app.src.providers import BrowserbaseResearchProvider, JsonCompletion, PosAnnotationProvider
+from app.src.models import Dataset, ResearchArtifact, ResearchSource, SourceType, UploadedAsset
+from app.src.providers import BrowserbaseResearchProvider, JsonCompletion, OCRProvider, PosAnnotationProvider
 from app.src.tracing import Tracer
 
 
@@ -52,6 +52,34 @@ class FakePosLLM:
                 "rationale": "Used cached POS research.",
             },
             usage={"input_tokens": 8, "output_tokens": 12},
+        )
+
+
+class FakeVisionLLM:
+    provider = "anthropic"
+    model = "fake-claude"
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete_vision_json(self, *, task_name, system, prompt, image_bytes, media_type, max_tokens=None):
+        self.calls.append(
+            {
+                "task_name": task_name,
+                "system": system,
+                "prompt": prompt,
+                "image_bytes": image_bytes,
+                "media_type": media_type,
+                "max_tokens": max_tokens,
+            }
+        )
+        return JsonCompletion(
+            data={
+                "text": "Amoxtli",
+                "confidence": 0.82,
+                "rationale": "Literal character transcription.",
+            },
+            usage={"input_tokens": 6, "output_tokens": 8},
         )
 
 
@@ -326,6 +354,47 @@ def test_pos_suggestion_prompt_includes_reviewer_feedback_examples() -> None:
     assert prompt["reviewer_feedback"] == feedback_examples
     assert any("reviewer-preferred positive examples" in instruction for instruction in prompt["instructions"])
     assert any("denied POS suggestions as mistakes" in instruction for instruction in prompt["instructions"])
+
+
+def test_ocr_prompt_requires_literal_character_extraction() -> None:
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key="test-anthropic-key",
+        arize_enabled=False,
+        phoenix_enabled=False,
+    )
+    fake_llm = FakeVisionLLM()
+    provider = OCRProvider(settings=settings, llm=fake_llm, tracer=Tracer(settings))
+
+    text, confidence, rationale = provider.extract(
+        UploadedAsset(
+            dataset_id="ds_test",
+            import_id="imp_test",
+            source_type=SourceType.IMAGE,
+            filename="scan.png",
+            content_type="image/png",
+            data=b"fake image bytes",
+        ),
+        language_code="nah",
+        language_name="Nahuatl",
+    )
+
+    assert text == "Amoxtli"
+    assert confidence == 0.82
+    assert rationale == "Literal character transcription."
+    call = fake_llm.calls[0]
+    prompt = json_module.loads(call["prompt"])
+    prompt_text = json_module.dumps(prompt)
+    assert call["task_name"] == "ocr_extract"
+    assert call["image_bytes"] == b"fake image bytes"
+    assert call["media_type"] == "image/png"
+    assert "literal OCR transcription agent" in call["system"]
+    assert prompt["language_context"]["code"] == "nah"
+    assert "do not infer, translate, normalize, or correct" in prompt["language_context"]["purpose"]
+    assert "Transcribe visible characters exactly" in prompt["task"]
+    assert "Do not translate" in prompt_text
+    assert "Do not correct orthography" in prompt_text
+    assert "Do not guess a word from meaning" in prompt_text
 
 
 def test_pos_suggestion_invalid_json_retries_once_with_compact_prompt() -> None:

@@ -1,18 +1,18 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
-import { EMPTY_ANNOTATION_ROWS, EMPTY_DATASETS, EMPTY_LABELS, EMPTY_SUGGESTIONS, PAGE_SIZE } from "@/lib/constants";
+import { EMPTY_ANNOTATION_ROWS, EMPTY_DATASETS, EMPTY_LABELS, EMPTY_OCR_ROWS, PAGE_SIZE } from "@/lib/constants";
 import { queryKeys } from "@/lib/queryKeys";
 import type {
   AnnotationRowsResponse,
   Dashboard,
   Dataset,
   LabelsResponse,
+  OcrRowsResponse,
   PaginationMeta,
   ResearchArtifact,
   ResearchType,
   ReviewFilter,
-  SuggestionsResponse,
   TranslationReviewFilter,
   WorkspacePagination,
   WorkspaceTab,
@@ -62,11 +62,11 @@ export function useWorkspaceData(
     enabled: enabled && activeTab === "pos",
     placeholderData: keepPreviousData,
   });
-  const ocrSuggestionsQuery = useQuery({
-    queryKey: queryKeys.suggestions(datasetId, "ocr", "pending", PAGE_SIZE, ocrOffset),
+  const ocrRowsQuery = useQuery({
+    queryKey: queryKeys.ocrRows(datasetId, PAGE_SIZE, ocrOffset),
     queryFn: ({ signal }) =>
-      api<SuggestionsResponse>(
-        `/datasets/${datasetId}/suggestions?type=ocr&status=pending&limit=${PAGE_SIZE}&offset=${ocrOffset}`,
+      api<OcrRowsResponse>(
+        `/datasets/${datasetId}/ocr-rows?limit=${PAGE_SIZE}&offset=${ocrOffset}`,
         { signal },
       ),
     enabled: enabled && activeTab === "ocr",
@@ -99,7 +99,7 @@ export function useWorkspaceData(
   const queries = [
     dashboardQuery,
     posRowsQuery,
-    ocrSuggestionsQuery,
+    ocrRowsQuery,
     translationLabelsQuery,
     posResearchQuery,
     translationResearchQuery,
@@ -108,10 +108,10 @@ export function useWorkspaceData(
   return {
     dashboard: dashboardQuery.data ?? null,
     posRows: posRowsQuery.data?.rows ?? EMPTY_ANNOTATION_ROWS,
-    ocrSuggestions: ocrSuggestionsQuery.data?.suggestions ?? EMPTY_SUGGESTIONS,
+    ocrRows: ocrRowsQuery.data?.rows ?? EMPTY_OCR_ROWS,
     translationLabels: translationLabelsQuery.data?.labels ?? EMPTY_LABELS,
     posRowsPage: pageMeta(posRowsQuery.data, pagination.posRows),
-    ocrSuggestionsPage: pageMeta(ocrSuggestionsQuery.data, pagination.ocrSuggestions),
+    ocrRowsPage: pageMeta(ocrRowsQuery.data, pagination.ocrSuggestions),
     translationLabelsPage: pageMeta(translationLabelsQuery.data, pagination.translationLabels),
     researchByType: {
       pos: posResearchQuery.data ?? null,

@@ -49,7 +49,7 @@ export function useWorkspaceController() {
   }, posReviewFilter, translationReviewFilter);
   const dashboard = workspaceData.dashboard;
   const posRows = workspaceData.posRows;
-  const ocrSuggestions = workspaceData.ocrSuggestions;
+  const ocrRows = workspaceData.ocrRows;
   const translationLabels = workspaceData.translationLabels;
   const researchByType = workspaceData.researchByType;
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -125,8 +125,8 @@ export function useWorkspaceController() {
   }, [posReviewFilter]);
 
   useEffect(() => {
-    setOcrSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.ocrSuggestionsPage.total)));
-  }, [workspaceData.ocrSuggestionsPage.total]);
+    setOcrSuggestionsPage(current => Math.min(current, lastPageIndex(workspaceData.ocrRowsPage.total)));
+  }, [workspaceData.ocrRowsPage.total]);
 
   useEffect(() => {
     setTranslationLabelsPage(current => Math.min(current, lastPageIndex(workspaceData.translationLabelsPage.total)));
@@ -209,15 +209,17 @@ export function useWorkspaceController() {
     setOcrDrafts(previous => {
       const next = { ...previous };
       let changed = false;
-      for (const suggestion of ocrSuggestions) {
+      for (const row of ocrRows) {
+        const suggestion = row.pending_suggestion;
+        if (!suggestion) continue;
         if (next[suggestion.id] === undefined) {
-          next[suggestion.id] = suggestion.suggested_text ?? "";
+          next[suggestion.id] = suggestion.suggested_text ?? row.text ?? "";
           changed = true;
         }
       }
       return changed ? next : previous;
     });
-  }, [ocrSuggestions]);
+  }, [ocrRows]);
 
   useEffect(() => {
     setTranslationDrafts(previous => {
@@ -255,13 +257,19 @@ export function useWorkspaceController() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.annotationRowsRoot(datasetId, "pos") });
   }
 
+  async function invalidateOcrRows(datasetId = selectedDatasetId) {
+    if (!datasetId) return;
+    setOcrSuggestionsPage(0);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.ocrRowsRoot(datasetId) });
+  }
+
   async function invalidateSuggestions(type: SuggestionType, datasetId = selectedDatasetId) {
     if (!datasetId) return;
     if (type === "pos") {
       await invalidatePosRows(datasetId);
     }
     if (type === "ocr") {
-      setOcrSuggestionsPage(0);
+      await invalidateOcrRows(datasetId);
     }
     await queryClient.invalidateQueries({ queryKey: queryKeys.suggestionsRoot(datasetId, type, "pending") });
   }
@@ -273,6 +281,7 @@ export function useWorkspaceController() {
 
   async function invalidateImportResult(importKind: ImportKind, datasetId = selectedDatasetId) {
     await invalidateDashboard(datasetId);
+    await invalidateOcrRows(datasetId);
     if (importKind === "translation") {
       await invalidateTranslationLabels(datasetId);
     }
@@ -430,17 +439,17 @@ export function useWorkspaceController() {
     });
   }
 
-  async function runOcr() {
-    if (!selectedDatasetId || selectedOcrImportIds.length === 0) return;
+  async function runOcr(importIds = selectedOcrImportIds) {
+    if (!selectedDatasetId || importIds.length === 0) return;
     await runAction(async () => {
       const response = await api<{ job: Job }>(`/datasets/${selectedDatasetId}/ocr`, {
         method: "POST",
-        body: JSON.stringify({ import_ids: selectedOcrImportIds }),
+        body: JSON.stringify({ import_ids: importIds }),
       });
       rememberJob(response.job);
       return response;
     }, "OCR suggestions generated", async () => {
-      await invalidateSuggestions("ocr");
+      await invalidateOcrRows();
       await invalidateDashboard();
     });
   }
@@ -550,7 +559,7 @@ export function useWorkspaceController() {
     manualSource,
     manualText,
     ocrDrafts,
-    ocrSuggestions,
+    ocrRows,
     ocrSuggestionsPage,
     openDetail,
     posRows,

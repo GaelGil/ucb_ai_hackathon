@@ -1,15 +1,32 @@
-import { Badge, Box, Button, Group, MultiSelect, ScrollArea, Stack, Table, Text, Textarea } from "@mantine/core";
+import {
+  ActionIcon,
+  Badge,
+  Box,
+  Button,
+  Divider,
+  Group,
+  Image,
+  Modal,
+  MultiSelect,
+  ScrollArea,
+  Stack,
+  Table,
+  Text,
+  Textarea,
+  Tooltip,
+} from "@mantine/core";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { TbEye, TbWand } from "react-icons/tb";
 
 import { LoadingBlock } from "@/components/ui/LoadingBlock";
 import { PaginatedTableFooter } from "@/components/ui/PaginatedTableFooter";
 import { PaperPanel } from "@/components/ui/PaperPanel";
-import { PreviewTextButton } from "@/components/ui/PreviewTextButton";
-import { formatPercent, statusColor } from "@/lib/format";
+import { API_BASE_URL } from "@/lib/api";
+import { formatPercent } from "@/lib/format";
 import type {
-  DetailContent,
   ImportRecord,
+  OcrRow,
   PaginationMeta,
   Suggestion,
   SuggestionStatus,
@@ -18,19 +35,41 @@ import type {
 
 import { SuggestionActions } from "./SuggestionActions";
 
+function imageSrc(row: OcrRow) {
+  return row.image_url.startsWith("http") ? row.image_url : `${API_BASE_URL}${row.image_url}`;
+}
+
+function rowText(row: OcrRow, drafts: TextDraftMap) {
+  const suggestion = row.pending_suggestion;
+  return suggestion ? drafts[suggestion.id] ?? suggestion.suggested_text ?? row.text : row.text;
+}
+
+function statusLabel(row: OcrRow) {
+  if (row.pending_suggestion) return "Pending review";
+  if (row.status === "reviewed") return "Reviewed";
+  return "Not scanned";
+}
+
+function statusColor(row: OcrRow) {
+  if (row.pending_suggestion) return "yellow";
+  if (row.status === "reviewed") return "green";
+  return "gray";
+}
+
 export function OcrSuggestionsTable({
   latestAssetImport,
   imageImports,
   selectedImportIds,
-  suggestions,
+  rows,
   drafts,
   pagination,
   pageIndex,
+  pendingSuggestionTotal,
   loading,
   working,
-  onOpenDetail,
   onPageChange,
   onRunOcr,
+  onRunOcrForImport,
   onSelectedImportIdsChange,
   onDraftChange,
   onReview,
@@ -38,112 +77,136 @@ export function OcrSuggestionsTable({
   latestAssetImport: ImportRecord | null;
   imageImports: ImportRecord[];
   selectedImportIds: string[];
-  suggestions: Suggestion[];
+  rows: OcrRow[];
   drafts: TextDraftMap;
   pagination: PaginationMeta;
   pageIndex: number;
+  pendingSuggestionTotal: number;
   loading: boolean;
   working: boolean;
-  onOpenDetail: (detail: DetailContent) => void;
   onPageChange: (pageIndex: number) => void;
   onRunOcr: () => void;
+  onRunOcrForImport: (importId: string) => void;
   onSelectedImportIdsChange: (ids: string[]) => void;
   onDraftChange: (id: string, value: string) => void;
   onReview: (suggestion: Suggestion, action: SuggestionStatus) => void;
 }) {
+  const [reviewingRow, setReviewingRow] = useState<OcrRow | null>(null);
+  const reviewingSuggestion = reviewingRow?.pending_suggestion ?? null;
+  const modalText = reviewingRow ? rowText(reviewingRow, drafts) : "";
   const imageOptions = imageImports.map(item => ({
     value: item.id,
     label: item.filename ?? item.id,
   }));
 
   const columns = useMemo(() => {
-    const columnHelper = createColumnHelper<Suggestion>();
+    const columnHelper = createColumnHelper<OcrRow>();
 
     return [
-      columnHelper.accessor("original_text", {
-        header: "Image/PDF",
-        cell: info => (
-          <Box maw={220} miw={160}>
-            <PreviewTextButton
-              text={info.getValue()}
-              title="OCR Source"
-              onOpen={() => {
-                const suggestion = info.row.original;
-                onOpenDetail({
-                  title: "OCR Suggestion",
-                  rows: [
-                    { label: "Source", value: suggestion.original_text },
-                    { label: "OCR Text", value: drafts[suggestion.id] ?? suggestion.suggested_text ?? "No OCR text" },
-                    { label: "Status", value: suggestion.status },
-                    { label: "Confidence", value: formatPercent(suggestion.confidence) },
-                    { label: "Rationale", value: suggestion.rationale || "No rationale" },
-                    { label: "Suggestion ID", value: suggestion.id },
-                  ],
-                });
-              }}
-            />
-            <Badge color={statusColor(info.row.original.status)} mt={6} radius="sm" variant="dot">
-              {info.row.original.status}
-            </Badge>
-          </Box>
-        ),
-      }),
       columnHelper.display({
-        id: "text_on_screen",
-        header: "Text on Screen",
+        id: "image",
+        header: "Image",
         cell: info => {
-          const suggestion = info.row.original;
-
+          const row = info.row.original;
           return (
-            <Textarea
-              aria-label={`OCR text for ${suggestion.original_text}`}
-              autoComplete="off"
-              autosize
-              maxRows={3}
-              minRows={3}
-              name={`ocr-${suggestion.id}`}
-              onChange={event => onDraftChange(suggestion.id, event.currentTarget.value)}
-              value={drafts[suggestion.id] ?? suggestion.suggested_text ?? ""}
-              w={300}
-            />
+            <Group gap="sm" miw={220} wrap="nowrap">
+              <Image
+                alt={row.filename}
+                fallbackSrc=""
+                fit="cover"
+                h={72}
+                radius="sm"
+                src={imageSrc(row)}
+                w={96}
+              />
+              <Box miw={0}>
+                <Text fw={700} lineClamp={2} size="sm">
+                  {row.filename}
+                </Text>
+                <Text c="dimmed" size="xs">
+                  {row.import_id}
+                </Text>
+              </Box>
+            </Group>
           );
         },
       }),
       columnHelper.display({
-        id: "suggestions",
-        header: "Suggestions",
+        id: "text",
+        header: "Extracted Text",
         cell: info => {
-          const suggestion = info.row.original;
-
+          const text = rowText(info.row.original, drafts);
           return (
-            <Stack gap="xs" miw={260}>
-              <Badge color="grape" radius="sm" variant="light" w="fit-content">
-                {formatPercent(suggestion.confidence)}
-              </Badge>
-              <Text c="dimmed" size="xs">
-                {suggestion.rationale || "Review the extracted screen text."}
-              </Text>
-              <SuggestionActions suggestion={suggestion} working={working} onReview={onReview} />
-            </Stack>
+            <Box maw={360} miw={240}>
+              {text ? (
+                <Text fw={600} lineClamp={3} size="sm">
+                  {text}
+                </Text>
+              ) : null}
+            </Box>
+          );
+        },
+      }),
+      columnHelper.display({
+        id: "status",
+        header: "Status",
+        cell: info => {
+          const row = info.row.original;
+          return (
+            <Badge color={statusColor(row)} radius="sm" variant={row.pending_suggestion ? "dot" : "light"}>
+              {statusLabel(row)}
+            </Badge>
+          );
+        },
+      }),
+      columnHelper.display({
+        id: "action",
+        header: "Review",
+        cell: info => {
+          const row = info.row.original;
+          if (row.status === "not_scanned") {
+            return (
+              <Button
+                disabled={working}
+                leftSection={<TbWand aria-hidden="true" size={15} />}
+                onClick={() => onRunOcrForImport(row.import_id)}
+                size="compact-sm"
+                variant="light"
+              >
+                Scan
+              </Button>
+            );
+          }
+          return (
+            <Tooltip label={row.pending_suggestion ? "Review OCR text" : "View OCR text"}>
+              <ActionIcon aria-label="View OCR row" onClick={() => setReviewingRow(row)} variant="light">
+                <TbEye aria-hidden="true" size={17} />
+              </ActionIcon>
+            </Tooltip>
           );
         },
       }),
     ];
-  }, [drafts, onDraftChange, onOpenDetail, onReview, working]);
+  }, [drafts, onRunOcrForImport, working]);
 
   const table = useReactTable({
     columns,
-    data: suggestions,
+    data: rows,
     getCoreRowModel: getCoreRowModel(),
   });
 
+  function reviewAndClose(suggestion: Suggestion, action: SuggestionStatus) {
+    onReview(suggestion, action);
+    setReviewingRow(null);
+  }
+
   return (
-    <PaperPanel title="OCR" eyebrow="Images, text on screen, suggestions">
+    <PaperPanel title="OCR" eyebrow="Images, literal text, review">
       <Stack gap="md">
-        <Group align="end" justify="space-between">
-          <Stack gap={4} style={{ flex: 1 }}>
+        <Group align="end" justify="space-between" wrap="wrap">
+          <Stack gap={4} flex={1}>
             <Text c="dimmed" size="sm">
-              Pending rows: {pagination.total}
+              Images: {pagination.total} | Pending review: {pendingSuggestionTotal}
             </Text>
             <Text c="dimmed" size="xs">
               Latest image import: {latestAssetImport?.filename ?? "No image import yet"}
@@ -160,19 +223,23 @@ export function OcrSuggestionsTable({
               value={selectedImportIds}
             />
           </Stack>
-          <Button color="green" disabled={working || selectedImportIds.length === 0} onClick={onRunOcr}>
+          <Button
+            disabled={working || selectedImportIds.length === 0}
+            leftSection={<TbWand aria-hidden="true" size={16} />}
+            onClick={onRunOcr}
+          >
             Run OCR
           </Button>
         </Group>
         {loading ? (
-          <LoadingBlock message="Loading OCR suggestions…" />
-        ) : suggestions.length === 0 ? (
+          <LoadingBlock message="Loading OCR rows..." />
+        ) : rows.length === 0 ? (
           <Text c="dimmed" size="sm">
-            No pending OCR suggestions.
+            No image uploads yet. Upload an image, then run OCR.
           </Text>
         ) : (
           <ScrollArea type="auto">
-            <Table miw={920} highlightOnHover>
+            <Table miw={980} highlightOnHover>
               <Table.Thead>
                 {table.getHeaderGroups().map(headerGroup => (
                   <Table.Tr key={headerGroup.id}>
@@ -188,9 +255,7 @@ export function OcrSuggestionsTable({
                 {table.getRowModel().rows.map(row => (
                   <Table.Tr key={row.id}>
                     {row.getVisibleCells().map(cell => (
-                      <Table.Td key={cell.id} style={{ verticalAlign: "top" }}>
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </Table.Td>
+                      <Table.Td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</Table.Td>
                     ))}
                   </Table.Tr>
                 ))}
@@ -200,6 +265,57 @@ export function OcrSuggestionsTable({
         )}
         <PaginatedTableFooter pagination={pagination} pageIndex={pageIndex} onPageChange={onPageChange} />
       </Stack>
+
+      <Modal
+        centered
+        onClose={() => setReviewingRow(null)}
+        opened={reviewingRow !== null}
+        overlayProps={{ backgroundOpacity: 0.74, blur: 3 }}
+        padding="lg"
+        radius="md"
+        scrollAreaComponent={ScrollArea.Autosize}
+        shadow="xl"
+        size="lg"
+        title="Review OCR Text"
+      >
+        {reviewingRow ? (
+          <Stack gap="md">
+            <Image alt={reviewingRow.filename} fit="contain" h={260} radius="md" src={imageSrc(reviewingRow)} />
+            <Textarea
+              autosize
+              label="Extracted Text"
+              maxRows={8}
+              minRows={4}
+              onChange={event => {
+                if (reviewingSuggestion) {
+                  onDraftChange(reviewingSuggestion.id, event.currentTarget.value);
+                }
+              }}
+              readOnly={!reviewingSuggestion}
+              value={modalText}
+            />
+            <Group gap="xs">
+              <Badge color={statusColor(reviewingRow)} radius="sm" variant="dot">
+                {statusLabel(reviewingRow)}
+              </Badge>
+              {reviewingRow.confidence !== null ? (
+                <Badge color="grape" radius="sm" variant="light">
+                  {formatPercent(reviewingRow.confidence)}
+                </Badge>
+              ) : null}
+            </Group>
+            <Text c="dimmed" size="sm">
+              {reviewingRow.rationale || "Review the literal character extraction."}
+            </Text>
+            {reviewingSuggestion ? (
+              <>
+                <Divider />
+                <SuggestionActions suggestion={reviewingSuggestion} working={working} onReview={reviewAndClose} />
+              </>
+            ) : null}
+          </Stack>
+        ) : null}
+      </Modal>
     </PaperPanel>
   );
 }

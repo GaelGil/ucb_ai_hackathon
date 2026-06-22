@@ -22,6 +22,9 @@ export const queryKeys = {
     offset: number,
     reviewFilter: ReviewFilter = "all",
   ) => [...queryKeys.annotationRowsRoot(datasetId, type), limit, offset, reviewFilter] as const,
+  ocrRowsRoot: (datasetId: string) => [...queryKeys.workspace(datasetId), "ocr-rows"] as const,
+  ocrRows: (datasetId: string, limit: number, offset: number) =>
+    [...queryKeys.ocrRowsRoot(datasetId), limit, offset] as const,
   labelsRoot: (datasetId: string, type: SuggestionType) => [...queryKeys.workspace(datasetId), "labels", type] as const,
   labels: (
     datasetId: string,

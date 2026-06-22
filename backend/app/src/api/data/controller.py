@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from sqlmodel import Session
 
 from app.src.api.data.service import DataService
 from app.src.api.dependencies import AppServices, get_data_service, get_services
 from app.src.jobs import JobRunner
-from app.src.models import ImportKind, ImportResponse, OcrRequest, SourceType
+from app.src.models import ImportKind, ImportResponse, OcrRequest, OcrRowsResponse, SourceType
 from app.src.parsing import source_type_from_filename
 
 
@@ -171,6 +171,31 @@ async def create_import(
         import_kind=import_kind,
     )
     return ImportResponse(import_record=record, job=job, created_items=items, created_labels=labels)
+
+
+@router.get("/datasets/{dataset_id}/ocr-rows", response_model=OcrRowsResponse)
+def list_ocr_rows(
+    dataset_id: str,
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    service: DataService = Depends(get_data_service),
+) -> OcrRowsResponse:
+    rows, total = service.list_ocr_rows(dataset_id, limit=limit, offset=offset)
+    return OcrRowsResponse(rows=rows, total=total, limit=limit, offset=offset)
+
+
+@router.get("/datasets/{dataset_id}/assets/{import_id}")
+def get_image_asset(
+    dataset_id: str,
+    import_id: str,
+    service: DataService = Depends(get_data_service),
+) -> Response:
+    data, filename, content_type = service.get_image_asset(dataset_id, import_id)
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @router.post("/datasets/{dataset_id}/ocr")

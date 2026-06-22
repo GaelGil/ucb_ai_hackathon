@@ -130,15 +130,16 @@ export function App() {
                   latestAssetImport={workspace.latestAssetImport}
                   imageImports={workspace.imageAssetImports}
                   selectedImportIds={workspace.selectedOcrImportIds}
-                  suggestions={workspace.ocrSuggestions}
+                  rows={workspace.ocrRows}
                   drafts={workspace.ocrDrafts}
-                  pagination={workspace.workspaceData.ocrSuggestionsPage}
+                  pagination={workspace.workspaceData.ocrRowsPage}
                   pageIndex={workspace.ocrSuggestionsPage}
+                  pendingSuggestionTotal={workspace.dashboard?.suggestion_counts["ocr:pending"] ?? 0}
                   loading={workspace.workspaceLoading}
                   working={workspace.working}
-                  onOpenDetail={workspace.openDetail}
                   onPageChange={workspace.setOcrSuggestionsPage}
                   onRunOcr={() => void workspace.runOcr()}
+                  onRunOcrForImport={importId => void workspace.runOcr([importId])}
                   onSelectedImportIdsChange={workspace.setSelectedOcrImportIds}
                   onDraftChange={(id, value) => workspace.setOcrDrafts(previous => ({ ...previous, [id]: value }))}
                   onReview={(suggestion, action) => void workspace.reviewSuggestion(suggestion, action)}

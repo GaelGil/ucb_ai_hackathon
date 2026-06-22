@@ -9,7 +9,14 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.src import models as api
-from app.src.api.mappers import data_row_to_text_item, import_to_api, job_to_api, label_to_api, source_type_to_db
+from app.src.api.mappers import (
+    ai_suggestion_to_api,
+    data_row_to_text_item,
+    import_to_api,
+    job_to_api,
+    label_to_api,
+    source_type_to_db,
+)
 from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Job, Label
 from app.src.database.models.data import DataSourceType
 from app.src.database.models.import_record import ImportStatus
@@ -611,6 +618,49 @@ class DataService:
             self.session.refresh(record)
         return import_to_api(record), job
 
+    def list_ocr_rows(
+        self,
+        dataset_id: str,
+        *,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[list[api.OcrRow], int]:
+        dataset = self._get_dataset(dataset_id)
+        all_rows = self.session.exec(
+            select(DataRow)
+            .where(DataRow.dataset_id == dataset.id)
+            .where(DataRow.source_type == DataSourceType.image)
+            .order_by(DataRow.created_at.desc(), DataRow.row_index, DataRow.id)
+        ).all()
+        total = len(all_rows)
+        page_rows = all_rows[offset : offset + limit]
+        row_ids = [row.id for row in page_rows]
+        pending_by_row_id = self._pending_ocr_suggestions_by_row_id(dataset.id, row_ids)
+        labels_by_row_id = self._ocr_labels_by_row_id(dataset.id, row_ids)
+        return [
+            self._ocr_row_to_api(
+                row,
+                pending_suggestion=pending_by_row_id.get(row.id),
+                label=labels_by_row_id.get(row.id),
+            )
+            for row in page_rows
+        ], total
+
+    def get_image_asset(self, dataset_id: str, import_id: str) -> tuple[bytes, str, str]:
+        self._get_dataset(dataset_id)
+        row = self.session.exec(
+            select(DataRow)
+            .where(DataRow.dataset_id == dataset_id)
+            .where(DataRow.import_id == import_id)
+            .where(DataRow.source_type == DataSourceType.image)
+        ).first()
+        if row is None:
+            raise NotFoundError(f"Image import {import_id} was not found.")
+        metadata = row.row_metadata if isinstance(row.row_metadata, dict) else {}
+        filename = str(metadata.get("filename") or row.storage_path or "image")
+        content_type = str(metadata.get("content_type") or "application/octet-stream")
+        return self._asset_bytes(row), filename, content_type
+
     def create_ocr_suggestions(
         self,
         dataset_id: str,
@@ -701,7 +751,11 @@ class DataService:
                     data=self._asset_bytes(row),
                     created_at=row.created_at,
                 )
-                text, confidence, rationale = self.ocr_provider.extract(asset)
+                text, confidence, rationale = self.ocr_provider.extract(
+                    asset,
+                    language_code=dataset.language.code,
+                    language_name=dataset.language.name,
+                )
                 evaluation = self._evaluate_ocr(asset, text, confidence, rationale, dataset.id, row.id)
                 if evaluation:
                     evaluations.append(evaluation)
@@ -770,6 +824,84 @@ class DataService:
             "labels": [item.get("label") for item in evaluations if item.get("label")],
             "feedback": [item.get("feedback") for item in evaluations if item.get("feedback")],
         }
+
+    def _pending_ocr_suggestions_by_row_id(
+        self,
+        dataset_id: str,
+        data_row_ids: list[str],
+    ) -> dict[str, AiSuggestion]:
+        if not data_row_ids:
+            return {}
+        suggestions = self.session.exec(
+            select(AiSuggestion)
+            .where(AiSuggestion.dataset_id == dataset_id)
+            .where(AiSuggestion.label_type == LabelType.ocr)
+            .where(AiSuggestion.status == SuggestionStatus.pending)
+            .where(AiSuggestion.data_row_id.in_(data_row_ids))
+            .order_by(AiSuggestion.created_at.desc(), AiSuggestion.id.desc())
+        ).all()
+        by_row_id: dict[str, AiSuggestion] = {}
+        for suggestion in suggestions:
+            by_row_id.setdefault(suggestion.data_row_id, suggestion)
+        return by_row_id
+
+    def _ocr_labels_by_row_id(self, dataset_id: str, data_row_ids: list[str]) -> dict[str, Label]:
+        if not data_row_ids:
+            return {}
+        labels = self.session.exec(
+            select(Label)
+            .where(Label.dataset_id == dataset_id)
+            .where(Label.type == LabelType.ocr)
+            .where(Label.data_row_id.in_(data_row_ids))
+            .order_by(Label.updated_at.desc(), Label.created_at.desc(), Label.id.desc())
+        ).all()
+        by_row_id: dict[str, Label] = {}
+        for label in labels:
+            by_row_id.setdefault(label.data_row_id, label)
+        return by_row_id
+
+    def _ocr_row_to_api(
+        self,
+        row: DataRow,
+        *,
+        pending_suggestion: AiSuggestion | None,
+        label: Label | None,
+    ) -> api.OcrRow:
+        metadata = row.row_metadata if isinstance(row.row_metadata, dict) else {}
+        filename = str(metadata.get("filename") or row.storage_path or row.id)
+        api_suggestion = ai_suggestion_to_api(pending_suggestion) if pending_suggestion is not None else None
+        api_label = label_to_api(label) if label is not None else None
+        status = "not_scanned"
+        text = ""
+        confidence: float | None = None
+        rationale = ""
+        if api_suggestion is not None:
+            status = "pending_review"
+            text = api_suggestion.suggested_text or ""
+            confidence = api_suggestion.confidence
+            rationale = api_suggestion.rationale
+        elif label is not None:
+            status = "reviewed"
+            value = label.value if isinstance(label.value, dict) else {}
+            text = str(value.get("text") or "")
+            confidence = None
+            rationale = "Reviewed OCR label."
+
+        return api.OcrRow(
+            id=row.id,
+            dataset_id=row.dataset_id,
+            data_row_id=row.id,
+            import_id=row.import_id or "",
+            filename=filename,
+            image_url=f"/datasets/{row.dataset_id}/assets/{row.import_id or ''}",
+            text=text,
+            status=status,
+            confidence=confidence,
+            rationale=rationale,
+            created_at=row.created_at,
+            pending_suggestion=api_suggestion,
+            label=api_label,
+        )
 
     def _asset_bytes(self, row: DataRow) -> bytes:
         inline = row.row_metadata.get("inline_data_base64") if isinstance(row.row_metadata, dict) else None
