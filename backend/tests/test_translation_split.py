@@ -1,11 +1,11 @@
 from sqlmodel import select
 
-from app.src.api.labels.service import LabelsService
-from app.src.models import SuggestionReview, SuggestionStatus as ApiSuggestionStatus
-from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
-from app.src.database.models.data import DataSourceType
-from app.src.database.models.label import LabelSource, LabelType
-from app.src.database.models.suggestion import SuggestionStatus
+from app.api.labels.service import LabelsService
+from app.schemas import SuggestionReview, SuggestionStatus as ApiSuggestionStatus
+from app.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
+from app.database.models.data_row import DataSourceType
+from app.database.models.label import LabelSource, LabelType
+from app.database.models.suggestion import SuggestionStatus
 from scripts.blank_translation_labels import enforce_translation_split
 
 

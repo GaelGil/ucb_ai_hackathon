@@ -3,10 +3,13 @@ import json as json_module
 import pytest
 import httpx
 
-from app.src.config import Settings
-from app.src.models import Dataset, ResearchArtifact, ResearchSource, SourceType, UploadedAsset
-from app.src.providers import BrowserbaseResearchProvider, JsonCompletion, OCRProvider, PosAnnotationProvider
-from app.src.tracing import Tracer
+from app.config import Settings
+from app.schemas import Dataset, ResearchArtifact, ResearchSource, SourceType, UploadedAsset
+from app.clients.image_reader import OCRProvider
+from app.clients.browserbase import BrowserbaseResearchProvider
+from app.clients.anthropic import JsonCompletion
+from app.clients.part_of_speech import PosAnnotationProvider
+from app.clients.tracing import Tracer
 
 
 class FakeLLM:
@@ -200,7 +203,7 @@ def test_browserbase_fetch_402_falls_back_to_search_results(monkeypatch) -> None
         },
         fetch_status=402,
     )
-    monkeypatch.setattr("app.src.providers.httpx.Client", fake_client)
+    monkeypatch.setattr("app.clients.browserbase.httpx.Client", fake_client)
     fake_llm = FakeLLM()
     provider = provider_with(fake_llm)
 
@@ -235,7 +238,7 @@ def test_pos_research_query_and_prompt_are_syntax_focused(monkeypatch) -> None:
         },
         fetch_status=402,
     )
-    monkeypatch.setattr("app.src.providers.httpx.Client", fake_client)
+    monkeypatch.setattr("app.clients.browserbase.httpx.Client", fake_client)
     fake_llm = FakeLLM()
     provider = provider_with(fake_llm)
 
@@ -440,7 +443,7 @@ def test_research_invalid_json_retries_once_with_compact_prompt(monkeypatch) -> 
         },
         fetch_status=402,
     )
-    monkeypatch.setattr("app.src.providers.httpx.Client", fake_client)
+    monkeypatch.setattr("app.clients.browserbase.httpx.Client", fake_client)
     fake_llm = RetryResearchLLM()
     provider = provider_with(fake_llm)
 
@@ -461,7 +464,7 @@ def test_research_invalid_json_retries_once_with_compact_prompt(monkeypatch) -> 
 
 def test_browserbase_empty_search_still_fails_without_calling_llm(monkeypatch) -> None:
     fake_client, _ = make_fake_http_client(search_payload={"results": []})
-    monkeypatch.setattr("app.src.providers.httpx.Client", fake_client)
+    monkeypatch.setattr("app.clients.browserbase.httpx.Client", fake_client)
     fake_llm = FakeLLM()
     provider = provider_with(fake_llm)
 

@@ -9,8 +9,8 @@ from alembic import context
 
 # Load app settings (DATABASE_URL from .env) and import every model so that
 # they register on SQLModel.metadata for autogenerate.
-from app.src.config import BACKEND_ROOT, get_settings
-import app.src.database.models  # noqa: F401  (registers all tables)
+from app.config import BACKEND_ROOT, get_settings
+import app.database.models  # noqa: F401  (registers all tables)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

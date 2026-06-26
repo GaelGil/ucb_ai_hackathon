@@ -1,4 +1,4 @@
-from app.src.config import Settings
+from app.config import Settings
 
 
 def test_settings_loads_dotenv_file(tmp_path) -> None:

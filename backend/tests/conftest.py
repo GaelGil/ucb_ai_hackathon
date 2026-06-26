@@ -13,18 +13,10 @@ from sqlmodel import Session, SQLModel, create_engine
 
 # Importing the models package registers every table on SQLModel.metadata,
 # which create_all() needs.
-import app.src.database.models  # noqa: F401
-from app.src.config import Settings
+import app.database.models  # noqa: F401
+from app.config import Settings
 
 settings = Settings(_env_file=None)
-
-collect_ignore = [
-    "test_browserbase_tool.py",
-    "test_data_agent.py",
-    "test_data_service.py",
-    "test_research_agent.py",
-    "test_research_service.py",
-]
 
 
 @pytest.fixture

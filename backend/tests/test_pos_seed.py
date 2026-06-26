@@ -1,11 +1,11 @@
 from sqlmodel import select
 
-from app.src.api.labels.service import LabelsService
-from app.src.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
-from app.src.database.models.data import DataSourceType
-from app.src.database.models.label import LabelSource, LabelType
-from app.src.database.models.suggestion import SuggestionStatus as DbSuggestionStatus
-from app.src.models import SuggestionReview, SuggestionStatus
+from app.api.labels.service import LabelsService
+from app.database.models import AiSuggestion, DataRow, Dataset, ImportRecord, Label, Language
+from app.database.models.data_row import DataSourceType
+from app.database.models.label import LabelSource, LabelType
+from app.database.models.suggestion import SuggestionStatus as DbSuggestionStatus
+from app.schemas import SuggestionReview, SuggestionStatus
 from scripts.create_pos_rows_from_translation import create_pos_rows_from_translation
 
 
